@@ -109,7 +109,8 @@ var agentHeaderValueRules = []struct {
 // 每个前缀都带版本斜杠（`claude-cli/` 而不是 `claude-cli`），这样 `codexa/1.0`
 // 不会撞上 `codex/`、`MyCherryStudio/x` 不会撞上 `cherrystudio/`。
 // 通用 SDK / 工具（curl、urllib、openai-python、node-fetch…）刻意不入表——
-// 它们不是「编码 Agent 客户端」，落进「未识别」桶才是诚实的。
+// 它们不是具体的终端客户端，落进「未识别」桶才是诚实的。
+// 已知的终端 LLM 客户端（不是编码 Agent，但同样是「谁在花我的额度」的答案）也入表。
 var agentUAPrefixes = []struct {
 	prefix string
 	client string
@@ -182,6 +183,8 @@ var agentUAPrefixes = []struct {
 	{"hanaagent/", "hanako"},
 	{"pi-coding-agent/", "pi"},
 	{"pi/", "pi"},
+	// 终端 LLM 客户端（非编码 Agent）
+	{"rikkahub", "rikkahub"}, // 安卓 LLM 客户端；实测 UA 首段为 rikkahub-android，品牌名足够独特，不强制带斜杠
 }
 
 // agentClientLabel 从入站请求头识别调用方客户端，返回写进用量桶的标签。

@@ -41,6 +41,8 @@ func TestAgentClientLabel(t *testing.T) {
 		{"UA gemini", mkHdr("User-Agent", "GeminiCLI/0.20.0/gemini-2.5-pro (linux; x64; cli)"), "gemini-cli"},
 		{"UA cherry studio", mkHdr("User-Agent", "CherryStudio/1.4.0"), "cherry-studio"},
 		{"UA cursor", mkHdr("User-Agent", "Cursor/0.48.7 (darwin arm64)"), "cursor"},
+		{"UA rikkahub-android", mkHdr("User-Agent", "rikkahub-android/1.2.0 (Android 15)"), "rikkahub"},
+		{"UA rikkahub 裸名", mkHdr("User-Agent", "rikkahub 1.2.0"), "rikkahub"},
 
 		{"UA 未知工具", mkHdr("User-Agent", "curl/8.5.0"), "未识别: curl"},
 		{"无任何头", mkHdr(), "未识别: (无 UA)"},
