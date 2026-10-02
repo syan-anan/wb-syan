@@ -228,7 +228,37 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .acc .efs .tag { margin: 1px 0; }
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
 .acc.md { min-width: 700px; }
-.acc.md th, .acc.md td { padding: 10px 9px; }
+/* 模型表：列多，内边距压到 7px；「积分倍率 / 默认档」不再吃宽度，
+   「支持的思考档位」只留够放标签的最小宽度——省出来的横向空间给可用率列。 */
+.acc.md th, .acc.md td { padding: 7px 8px; }
+.acc.md .efs { min-width: 96px; }
+
+/* ── 模型可用率（模型与档位页的一列）────────────────────────────────
+   7 项横排：今日调用 / 今日成功 / 近 30 天调用 / 近 30 天成功 / 状态 /
+   延迟 / 吞吐。每项「标签在上、值在下」，不额外占行高。
+   从没被调用过的模型整条显示「—」，不伪造 100%。 */
+.acc.md th.mdstat-h { min-width: 520px; }
+.acc.md td.mdstat { padding: 6px 8px; }
+.mdst { display: flex; align-items: stretch; }
+.mds {
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  padding: 0 9px; border-right: 1px solid var(--line-soft); white-space: nowrap;
+}
+.mds:first-child { padding-left: 0; }
+.mds:last-child { border-right: 0; padding-right: 0; }
+.mds-k { color: var(--ink-3); font-weight: 500; font-size: 11px; }
+.mds-v { font: 600 12.5px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
+.mds-v.ok { color: var(--ok); }
+.mds-v.bad { color: var(--bad); }
+/* 状态项最宽：上行「状态 + 百分比」，下行 24 格整点状态条。 */
+.mds-wide { min-width: 168px; }
+.mds-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.mds-bar { display: inline-flex; align-items: center; gap: 1.5px; }
+.mdsg { display: inline-block; width: 4px; height: 11px; border-radius: 1px; }
+.mdsg.ok { background: var(--ok); }
+.mdsg.warn { background: var(--warn); }
+.mdsg.bad { background: var(--bad); }
+.mdsg.void { background: color-mix(in srgb, var(--ink-3) 34%, transparent); }
 .who { min-width: 118px; max-width: 200px; }
 #taskTable .who { max-width: 360px; }
 #taskTable .who .nm, #taskTable .who .id { white-space: normal; word-break: break-all; }
@@ -297,7 +327,9 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 #view-logs .box > header { flex: none; }
 #logBox {
   flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 15px 17px;
-  font: 16px/1.75 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
+  /* 16px 一行太占高度，同屏能看的行数太少；小一号到 14px（面板字号刻度
+     12/14/16 的中间档），行高同步收到 1.7。 */
+  font: 14px/1.7 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
 }
 #logBox .ln { display: block; }
 #logBox .ln.e { color: var(--bad); }
@@ -638,7 +670,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </header>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th class="mdstat-h" title="近 30 天可用率：今日 / 近 30 天调用与成功、最近 24 个整点状态条、平均延迟、平均吞吐。没有观测的模型显示「—」，不伪造 100%">可用率</th><th>上下文长度</th><th>最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
@@ -724,14 +756,14 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 
       <div class="box" id="usAccBox">
         <header><h3>按账号</h3><span class="grow"></span>
-          <span class="note">请求数含失败尝试</span></header>
+          <span class="note">请求数含失败尝试 · 积分已用为账号池累计口径</span></header>
         <div class="tbl-wrap">
           <table class="acc">
             <thead><tr>
               <th class="mark" aria-hidden="true"></th><th>账号</th><th>域</th>
               <th class="num">请求</th><th class="num">失败</th>
               <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
-              <th class="num">积分已用</th>
+              <th class="num" title="累计口径：账号套餐总额度 − 剩余（覆盖全部历史，含逐请求记账上线前）；本窗口逐请求实测值在单元格 tooltip 里">积分已用</th>
               <th class="num">均延迟</th><th class="num">均速率</th>
             </tr></thead>
             <tbody id="usAccBody"></tbody>

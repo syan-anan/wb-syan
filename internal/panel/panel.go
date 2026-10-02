@@ -191,6 +191,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
+	p.mux.HandleFunc("GET /panel/api/model_stats", p.withAuth(p.modelStats))
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
@@ -618,13 +619,16 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 	//     变化；逐请求记账上线前的历史消耗只有它能覆盖，留着做对照。
 	nicks := map[string]string{}
 	var creditPoolTotal int64
+	creditByAcct := map[string]int64{}
 	for _, s := range p.cfg.Pool.List() {
 		if s.Nickname != "" {
 			nicks[s.UID] = s.Nickname
 		}
 		// CreditsTotal == 0 表示额度未知（旧 state / 查询失败），此时不猜、不计入。
 		if s.CreditsTotal > s.Credits {
-			creditPoolTotal += s.CreditsTotal - s.Credits
+			used := s.CreditsTotal - s.Credits
+			creditPoolTotal += used
+			creditByAcct[s.UID] = used
 		}
 	}
 	snap := p.cfg.Usage.Snapshot(hours, nicks)
@@ -632,8 +636,32 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 		Snapshot:            snap,
 		CreditUsedTotal:     snap.Totals.Credits,
 		CreditUsedPoolTotal: creditPoolTotal,
+		CreditUsedByAccount: creditByAcct,
 	})
 }
+
+// modelStats 模型与档位页的可用率数据：按模型聚合「今日 / 近 30 天」两个窗口的
+// 调用与成功数、均延迟、均吞吐，外加一条最近 24 整点的状态条。
+//
+// 只回桶里已有的观测：从未被调用过的模型不在返回里，前端显示「—」而不是伪造
+// 100%。返回按「近 30 天调用」降序，前端按 model id 建索引查表。
+func (p *Panel) modelStats(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Usage == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"stats": p.cfg.Usage.ModelStats(time.Now(), modelStatsDays, modelStatsSlots),
+	})
+}
+
+// modelStatsDays / modelStatsSlots：模型页可用率的两个固定口径（近 30 自然日、
+// 最近 24 整点状态条）。写死是为了与页面文案「近 30 天」「状态条 24 格」一致。
+const (
+	modelStatsDays  = 30
+	modelStatsSlots = 24
+)
 
 // usageResponse 用量快照 + 积分口径。内嵌 Snapshot 让 JSON 与改造前完全兼容
 // （只新增字段，不改结构），前端老逻辑不受影响。
@@ -645,6 +673,9 @@ type usageResponse struct {
 	CreditUsedTotal float64 `json:"credit_used_total"`
 	// CreditUsedPoolTotal 账号池累计口径（Σ 套餐总额度 − 剩余），不随窗口变化。
 	CreditUsedPoolTotal int64 `json:"credit_used_pool_total"`
+	// CreditUsedByAccount 同一累计口径的逐账号拆分（uid → 已用积分）。只含额度
+	// 已知的账号；额度未知（CreditsTotal=0）的账号不出现，前端显示「—」。
+	CreditUsedByAccount map[string]int64 `json:"credit_used_by_account"`
 }
 
 // usageSave 立即把内存中的用量桶落盘（正常由后台 30s 防抖刷新负责）。

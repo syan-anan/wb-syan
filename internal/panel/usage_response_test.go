@@ -25,6 +25,7 @@ func TestUsageResponseJSONShape(t *testing.T) {
 		Snapshot:            rec.Snapshot(72, nil),
 		CreditUsedTotal:     1234,
 		CreditUsedPoolTotal: 5678,
+		CreditUsedByAccount: map[string]int64{"uid1": 9012},
 	}
 	raw, err := json.Marshal(resp)
 	if err != nil {
@@ -46,6 +47,14 @@ func TestUsageResponseJSONShape(t *testing.T) {
 	var poolTotal int64
 	if err := json.Unmarshal(got["credit_used_pool_total"], &poolTotal); err != nil || poolTotal != 5678 {
 		t.Errorf("credit_used_pool_total = %s (err=%v), want 5678", got["credit_used_pool_total"], err)
+	}
+	// 逐账号累计口径：键名变了前端「按账号」列就整列空白，锁住。
+	var byAcctPool map[string]int64
+	if err := json.Unmarshal(got["credit_used_by_account"], &byAcctPool); err != nil {
+		t.Fatalf("credit_used_by_account unmarshal: %v", err)
+	}
+	if byAcctPool["uid1"] != 9012 {
+		t.Errorf("credit_used_by_account[uid1] = %d, want 9012", byAcctPool["uid1"])
 	}
 	// 逐账号积分走 by_account[].credits（Agg 内嵌字段），不再是单独的 map：
 	// 键名/类型变了前端就读不到，故连 credits_n 一起锁住。

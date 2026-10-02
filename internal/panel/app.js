@@ -633,18 +633,76 @@ function rateCell(m) {
 // 原始列表缓存在 mdList，切换筛选只重渲染，不再打一次上游。
 let mdList = [];
 let mdProbes = {};
+// mdStats 模型可用率（/panel/api/model_stats）：model id → ModelStat。
+// 与 mdProbes 一样属于可选增强，拉不到就是空表，整条显示「—」。
+let mdStats = {};
 function mdRealmOf(id) {
   const s = String(id || '');
   const i = s.indexOf(':');
   return i > 0 ? s.slice(0, i).toLowerCase() : '';
 }
+/* mdStatOf 取某个模型的可用率。用量桶里记的 model 是**调用时填的字符串**，
+   有的调用带 realm 前缀、有的不带，所以按「全名 → 去前缀 → 带前缀」三档查。 */
+function mdStatOf(id) {
+  const s = String(id || '');
+  if (!s) return null;
+  if (mdStats[s]) return mdStats[s];
+  const i = s.indexOf(':');
+  const bare = i > 0 ? s.slice(i + 1) : s;
+  return mdStats[bare] || mdStats['cn:' + bare] || mdStats['global:' + bare] || null;
+}
+
+/* mdStatStrip 模型可用率：7 项横排（今日调用 / 今日成功 / 近 30 天调用 /
+   近 30 天成功 / 状态 / 延迟 / 吞吐）。每项「标签在上、值在下」，状态项是
+   「状态 99.0%」+ 一条 24 格的整点状态条。
+   只显示桶里真有的观测——从没被调用过的模型整条「—」，不伪造 100%。
+   状态格：绿=全成 / 黄=有失败 / 红=失败过半 / 灰=该小时没观测。 */
+function mdStatStrip(m) {
+  const cell = (k, v, cls) => '<span class="mds"><b class="mds-k">' + k + '</b>' +
+    '<span class="mds-v' + (cls || '') + '">' + v + '</span></span>';
+  const s = mdStatOf(m.id);
+  if (!s) {
+    return '<div class="mdst">' + cell('今日调用', '—') + cell('今日成功', '—') +
+      cell('近 30 天调用', '—') + cell('近 30 天成功', '—') +
+      '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>' +
+      cell('延迟', '—') + cell('吞吐', '—') + '</div>';
+  }
+  const ok = Math.max(0, (s.today_req || 0) - (s.today_err || 0));
+  const wok = Math.max(0, (s.window_req || 0) - (s.window_err || 0));
+  const rate = s.window_req ? wok / s.window_req : null;
+  const rateCls = rate === null ? '' : (rate >= 0.98 ? ' ok' : (rate >= 0.9 ? '' : ' bad'));
+  const bars = (s.slots || []).map(sl => {
+    const t = String(sl.t || '').replace('T', ' ');
+    if (!sl.req) return '<i class="mdsg void" title="' + esc(t + ':00 · 无观测') + '"></i>';
+    const r = (sl.req - sl.err) / sl.req;
+    const cls = r >= 0.999 ? 'ok' : (r >= 0.9 ? 'warn' : 'bad');
+    return '<i class="mdsg ' + cls + '" title="' + esc(t + ':00 · 成功 ' +
+      (sl.req - sl.err) + '/' + sl.req) + '"></i>';
+  }).join('');
+  const status = bars
+    ? '<span class="mds mds-wide"><span class="mds-top"><b class="mds-k">状态</b>' +
+      '<span class="mds-v' + rateCls + '">' + (rate === null ? '—' : (rate * 100).toFixed(1) + '%') +
+      '</span></span><span class="mds-bar" title="最近 24 个整点，每格 1 小时">' + bars + '</span></span>'
+    : '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>';
+  return '<div class="mdst">' +
+    cell('今日调用', fmtInt(s.today_req || 0)) +
+    cell('今日成功', fmtInt(ok), ' ok') +
+    cell('近 30 天调用', fmtInt(s.window_req || 0)) +
+    cell('近 30 天成功', fmtInt(wok), ' ok') +
+    status +
+    cell('延迟', fmtMs(s.avg_latency_ms)) +
+    cell('吞吐', s.avg_tokens_per_second
+      ? Number(s.avg_tokens_per_second).toFixed(1) + ' t/s' : '—') +
+    '</div>';
+}
+
 function renderModels() {
   const tb = $('mdBody');
   const realmSel = $('mdRealm');
   const realm = realmSel ? realmSel.value : 'all';
   const list = realm === 'all' ? mdList : mdList.filter(m => mdRealmOf(m.id) === realm);
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' +
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' +
       (mdList.length ? '该域下没有模型' : '上游未返回模型') + '</div></td></tr>';
     return;
   }
@@ -668,6 +726,9 @@ function renderModels() {
         '<td class="num">' + rateCell(m) + '</td>' +
         '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
         '<td class="efs" style="white-space:normal">' + effs + '</td>' +
+        // 可用率：7 项横排占一列，塞在「支持的思考档位」与「上下文长度」之间的
+        // 空白里（此前那块空着，用户要求把这七项放这儿）。
+        '<td class="mdstat">' + mdStatStrip(m) + '</td>' +
         '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
         outCell(m, probeOf(m.id)) + '</tr>';
     }).join('');
@@ -678,16 +739,23 @@ function renderModels() {
 }
 async function loadModels() {
   const tb = $('mdBody');
-  tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
+  tb.innerHTML = '<tr><td colspan="8"><div class="empty">正在向上游查询…</div></td></tr>';
   try {
     // 探测数据是可选增强：拉取失败不影响模型列表本身
-    const [d, pr] = await Promise.all([api('models'), api('model_probes').catch(() => ({}))]);
+    // 探测 / 可用率都是可选增强：拉取失败不影响模型列表本身
+    const [d, pr, ms] = await Promise.all([
+      api('models'),
+      api('model_probes').catch(() => ({})),
+      api('model_stats').catch(() => ({})),
+    ]);
     mdList = d.models || [];
     mdProbes = pr.probes || {};
-    if (!mdList.length) { tb.innerHTML = '<tr><td colspan="7"><div class="empty">上游未返回模型</div></td></tr>'; return; }
+    mdStats = {};
+    (ms.stats || []).forEach(x => { if (x && x.model) mdStats[x.model] = x; });
+    if (!mdList.length) { tb.innerHTML = '<tr><td colspan="8"><div class="empty">上游未返回模型</div></td></tr>'; return; }
     renderModels();
   } catch (e) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' + esc(e.message) + '</div></td></tr>';
   }
 }
 $('btnModels').onclick = loadModels;
@@ -1614,12 +1682,19 @@ function usRow(name, sub, a, mid, withPerf, credit) {
 
 function renderUsage(d) {
   const t = d.totals || {};
-  // 积分两个口径的说明放进 title：窗口口径是逐请求实测（随筛选变），
-  // 账号池口径是「总额度 − 剩余」的累计值（不随窗口变，覆盖记账之前的历史）。
+  // 积分两个口径都算出来，主数字用**累计口径**：
+  //   - 累计口径 = Σ(账号套餐总额度 − 剩余)。它覆盖全部历史，是能对得上的真值。
+  //   - 窗口口径 = 逐请求累加上游 usage.credit。只覆盖「逐请求记账上线之后」的
+  //     请求，而且免费请求记 0（占比很大），单独当主数字会被读成「几乎没消耗」。
+  // 两个数都写进 tooltip，不藏数据。
   const poolCredit = Number(d.credit_used_pool_total || 0);
-  const creditTip = '窗口内逐请求实测消耗（上游 usage.credit 累加，随上方窗口变化）' +
-    (poolCredit ? '\n账号池累计口径：' + fmtInt(poolCredit) + '（总额度 − 剩余，不随窗口变化）' : '') +
-    (t.credits_n ? '' : '\n本窗口没有成本样本：逐请求积分记账自 v1.13.0 起，更早的分桶没有该字段');
+  const winCredit = t.credits_n
+    ? fmtInt(t.credits) + '（' + fmtInt(t.credits_n) + ' 次请求有成本观测）'
+    : '无样本';
+  const creditTip = '累计口径：Σ(账号套餐总额度 − 剩余)，覆盖全部历史，不随窗口变化' +
+    (poolCredit ? ' = ' + fmtInt(poolCredit) : '') +
+    '\n本窗口逐请求实测：' + winCredit +
+    (t.credits_n ? '' : '（逐请求积分记账自 v1.13.0 上线，更早的分桶没有该字段）');
   $('usStats').innerHTML =
     usStat(fmtTok(t.requests), '请求数') +
     usStat(fmtTok(t.total_tokens), '总 token') +
@@ -1627,9 +1702,11 @@ function renderUsage(d) {
     usStat(fmtTok(t.completion_tokens), 'completion') +
     usStat(t.errors ? String(t.errors) : '0', '失败尝试', t.errors ? 'warn' : '') +
     usStat(fmtMs(t.avg_latency_ms), '平均延迟') +
-    // 积分已用：窗口内逐请求实测消耗（上游 usage.credit 累加），随上方窗口变化。
-    // 窗口内没有成本样本（t.credits_n === 0）时显示「—」，不拿 0 冒充「没消耗」。
-    usStat(t.credits_n ? fmtInt(t.credits) : '—', '积分已用', '', creditTip);
+    // 积分已用：主数字 = 账号池累计口径（总额度 − 剩余）。窗口实测口径在 tooltip
+    // 里逐条列出——它只覆盖记账上线后的请求，当主数字会把「刚上线」读成「没消耗」。
+    // 累计口径也拿不到（额度未知）时才退回窗口实测，两者都没有才显示「—」。
+    usStat(poolCredit ? fmtInt(poolCredit) : (t.credits_n ? fmtInt(t.credits) : '—'),
+           '积分已用（累计）', '', creditTip);
 
   // 卡片、三张表与时序图全部按所选窗口统计（切窗口数字随之变化）；
   // 「全部历史」含 90 天前折叠出的日桶。这里标注当前口径与数据起点。
@@ -1641,14 +1718,20 @@ function renderUsage(d) {
     (d.since ? ' · 数据自 ' + d.since.replace('T', ' ') : '') +
     (d.file_bytes ? ' · 文件 ' + (d.file_bytes / 1024).toFixed(1) + ' KB' : '');
 
-  // 「按账号」多一列「积分已用」：窗口内逐请求实测（by_account[].credits），
-  // 随上方窗口变化；该账号在本窗口没有成本样本（credits_n = 0）时显示「—」，
-  // 不猜 0——否则「没记账」会被读成「没消耗」。
-  $('usAccBody').innerHTML = (d.by_account || []).map(x =>
-    usRow(x.key.slice(0, 8), x.extra || '', x,
+  // 「按账号」的「积分已用」列同样走**累计口径**（credit_used_by_account），与
+  // 上方胶囊一致；该账号额度未知（旧 state / 余额查询失败）时退回窗口实测，
+  // 两者都没有才显示「—」。窗口实测值放 title，点开就能对比。
+  const poolByAcct = d.credit_used_by_account || {};
+  $('usAccBody').innerHTML = (d.by_account || []).map(x => {
+    const pool = Number(poolByAcct[x.key] || 0);
+    const win = x.credits_n ? fmtInt(x.credits) : '—';
+    const tip = '累计口径（总额度 − 剩余）：' + (pool ? fmtInt(pool) : '额度未知') +
+      '\n本窗口逐请求实测：' + win;
+    const cell = pool ? fmtInt(pool) : win;
+    return usRow(x.key.slice(0, 8), x.extra || '', x,
       '<td class="num">' + esc(x.realm || '') + '</td>', true,
-      x.credits_n ? fmtInt(x.credits) : '—')
-  ).join('') || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
+      '<span title="' + esc(tip) + '">' + cell + '</span>');
+  }).join('') || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
 
   $('usModelBody').innerHTML = (d.by_model || []).map(x =>
     usRow(x.key, '', x, '', false)).join('') || '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
