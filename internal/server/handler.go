@@ -193,7 +193,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	if redisMode == "" {
 		redisMode = "noop"
 	}
-	// cost_explore 探索台账（issue #136 §5 可观测性）：累计探索事件数 + 各
+	// cost_explore 探索台账（issue #136 `5 可观测性）：累计探索事件数 + 各
 	// (域, 模型) 的最近探索时刻（键 "realm|model"）。与 accounts[].model_costs
 	// 行对照即可读出「探索→毕业」全链路（单一事实来源，不做双表示）。零回归只增键。
 	exploreEvents, exploreLast := h.cfg.Pool.CostExploreStatus()
@@ -249,11 +249,36 @@ const (
 
 // models 返回模型列表：纯动态（缓存 10min），失败/无号返回空列表（无静态兜底——
 // 拉不出目录即意味着上游不可用，假名单只会让客户端选到 11102 的模型）。
+//
+// 子密钥受限时按模型 / 域白名单**过滤名单本身**（不是"列全部、只放开一条通道"）：
+// 受限 key 拉到什么就只能用什么，客户端下拉框里不会出现越权模型。
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
-		"data":   h.modelList(),
+		"data":   filterModelsForIdentity(h.modelList(), keys.FromContext(r.Context())),
 	})
+}
+
+// filterModelsForIdentity 按调用方身份过滤 /v1/models 名单。
+//
+// 规则：主 key 或未设模型/域白名单 → 原样返回（零回归）；否则只保留同时通过
+// 模型白名单与域白名单的条目。条目 id 是网关路由协议形式（"cn:xxx" / "global:xxx"），
+// 先按 resolveModel 剥前缀再判定——白名单里写的是裸模型名。
+// 返回新切片，不修改入参（modelList 的结果同时被面板/其它调用方复用）。
+func filterModelsForIdentity(list []map[string]any, id keys.Identity) []map[string]any {
+	if id.Master || (len(id.Models) == 0 && len(id.Realms) == 0) {
+		return list
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, e := range list {
+		raw, _ := e["id"].(string)
+		realm, bare := resolveModel(raw)
+		if !id.AllowsRealm(realm) || !id.AllowsModel(bare) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // fmtCreditsPrefix 从上游 credits 原文提取倍率并格式化为 "[x0.05 credit]"。
@@ -624,7 +649,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//   - passthrough + 降级期：换 Degraded 中性提示词直达，不再先撞 400。
 	//   - passthrough / append 非降级期：透传客户端原始 system（append 则再插一条网关 system）。
 	// 降级裁决：append 在降级期退化为 replace（Rewrite(Degraded)）——append 带
-	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救（issue #129 设计 §4）。
+	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救（issue #129 设计 `4）。
 	degradedApplied := false
 	if h.cfg.PromptMode == "custom" && h.cfg.PromptText != "" {
 		body = prompt.Rewrite(body, h.cfg.PromptText)
