@@ -1,0 +1,547 @@
+/*! theme.css · wb-syan 面板「液态玻璃」主题层
+ *  视觉语言取自 syanUI v1.0.1（H:/qinglong/yybgo/syanUI，同源抽取自 syan-7 控制台）。
+ *
+ *  接入方式：本文件在 index.html 的内联 <style> 之后加载，只做「覆盖」——
+ *    - 不改 DOM 结构、不改 app.js、不改任何接口
+ *    - 令牌名沿用面板既有变量（--bg/--surface/--line/--ink/--accent/...），
+ *      值换成 syanUI 的液态玻璃配色，因此所有视图的颜色会自动跟着变
+ *    - 面板自有类名（.shell/.box/.keycard/.acc/...）在这里逐个映射成 syanUI 的视觉
+ *  回滚：删掉 index.html 里的 <link rel="stylesheet" href="theme.css"> 即可。
+ *
+ *  第一轮范围：外壳 + 通用控件 + 统计卡 + 表格 + 「账号池」「密钥管理」两个视图。
+ *  其余视图（用量/积分/任务中心/模型/配置/日志）先继承新配色与新外壳，细节留第二轮。
+ */
+
+/* ── 字体：syanUI 同款粗圆体（woff2，相对本样式表解析 → /panel/fonts/…） ── */
+@font-face {
+  font-family: "SyanRound";
+  src: url("fonts/syan-round.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── 设计令牌：默认深色（面板约定：:root 为深色，浅色是 [data-theme=light] 覆盖） ── */
+:root {
+  /* 面板原有变量名 → syanUI 玻璃值 */
+  --bg: #0c0e1c;
+  --surface: rgba(255,255,255,.06);
+  --surface-2: rgba(255,255,255,.045);
+  --raise: rgba(30,32,52,.94);
+  --line: rgba(255,255,255,.13);
+  --line-soft: rgba(255,255,255,.08);
+  --ink: #e8e9f4;
+  --ink-2: rgba(232,233,244,.72);
+  --ink-3: rgba(232,233,244,.5);
+  --accent: #7ea6ff;
+  --accent-ink: #fff;
+  --accent-soft: rgba(120,160,255,.18);
+  --ok: #56d9a0;
+  --ok-soft: rgba(86,217,160,.16);
+  --warn: #f0c165;
+  --warn-soft: rgba(240,193,101,.16);
+  --bad: #ff8fa0;
+  --bad-soft: rgba(255,120,140,.18);
+  --shadow: 0 18px 50px rgba(0,0,0,.45);
+  --mono: "SyanRound", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --sans: "SyanRound", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  /* syanUI 原生令牌 */
+  --sub: rgba(232,233,244,.62);
+  --bd: rgba(255,255,255,.14);
+  --glass: linear-gradient(135deg, rgba(52,55,82,.74), rgba(30,32,52,.5));
+  --glass-strong: linear-gradient(135deg, rgba(70,74,108,.9), rgba(40,43,66,.66));
+  --glass-soft: rgba(255,255,255,.05);
+  --row-hover: rgba(255,255,255,.05);
+  --glass-side: linear-gradient(135deg, rgba(52,55,82,.74), rgba(30,32,52,.5));
+  --nav-ink: rgba(232,233,244,.72);
+  --blur: blur(30px) saturate(150%);
+  --lift: 0 18px 50px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.10), inset 0 -1px 0 rgba(255,255,255,.04);
+}
+
+[data-theme="light"] {
+  --bg: #eef1ff;
+  --surface: rgba(255,255,255,.62);
+  --surface-2: rgba(255,255,255,.5);
+  --raise: rgba(255,255,255,.94);
+  --line: rgba(255,255,255,.8);
+  --line-soft: rgba(240,238,250,.7);
+  --ink: #1d1d2b;
+  --ink-2: rgba(29,29,43,.68);
+  --ink-3: rgba(29,29,43,.5);
+  --accent: #5b8cff;
+  --accent-ink: #fff;
+  --accent-soft: rgba(120,160,255,.16);
+  --ok: #0c7a4d;
+  --ok-soft: rgba(210,250,225,.8);
+  --warn: #92650a;
+  --warn-soft: rgba(255,240,200,.85);
+  --bad: #c02636;
+  --bad-soft: rgba(255,215,220,.8);
+  --shadow: 0 18px 50px rgba(90,70,150,.14);
+  --mono: "SyanRound", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --sans: "SyanRound", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  --sub: rgba(29,29,43,.56);
+  --bd: rgba(255,255,255,.65);
+  --glass: linear-gradient(135deg, rgba(255,255,255,.72), rgba(255,255,255,.38));
+  --glass-strong: linear-gradient(135deg, rgba(255,255,255,.9), rgba(255,255,255,.55));
+  --glass-soft: rgba(255,255,255,.35);
+  --row-hover: rgba(255,255,255,.45);
+  /* 浅色下侧栏比面板更实一点：底色亮，纯靠 backdrop 会让导航文字发灰看不清 */
+  --glass-side: linear-gradient(135deg, rgba(255,255,255,.90), rgba(255,255,255,.68));
+  --nav-ink: rgba(29,29,43,.68);
+  --blur: blur(30px) saturate(180%);
+  --lift: 0 18px 50px rgba(90,70,150,.14), inset 0 1px 0 rgba(255,255,255,.85), inset 0 -1px 0 rgba(255,255,255,.25);
+}
+
+/* ── 底噪：四角彩色光晕 + 斜向渐变（syanUI 的招牌背景） ── */
+body {
+  font-family: var(--sans);
+  color: var(--ink);
+  background:
+    radial-gradient(720px 520px at 4% 6%, rgba(150,70,150,.30), transparent 62%),
+    radial-gradient(780px 560px at 96% 4%, rgba(60,95,200,.30), transparent 62%),
+    radial-gradient(820px 620px at 84% 98%, rgba(105,80,190,.26), transparent 64%),
+    radial-gradient(640px 520px at 8% 96%, rgba(40,140,165,.22), transparent 60%),
+    linear-gradient(160deg,#0c0e1c 0%,#131126 52%,#191120 100%);
+  background-attachment: fixed;
+}
+[data-theme="light"] body {
+  background:
+    radial-gradient(720px 520px at 4% 6%, rgba(255,150,200,.40), transparent 62%),
+    radial-gradient(780px 560px at 96% 4%, rgba(130,175,255,.44), transparent 62%),
+    radial-gradient(820px 620px at 84% 98%, rgba(175,145,255,.38), transparent 64%),
+    radial-gradient(640px 520px at 8% 96%, rgba(120,230,250,.36), transparent 60%),
+    linear-gradient(160deg,#eef1ff 0%,#f4edfb 52%,#f8ecf4 100%);
+  background-attachment: fixed;
+}
+
+/* ── 外壳：左侧悬浮玻璃侧栏 + 右侧主区（syanUI .app/.sidebar） ── */
+.shell {
+  display: flex;
+  gap: 24px;
+  padding: 26px 28px 60px;
+  max-width: 1780px;
+  margin: 0 auto;
+  align-items: flex-start;
+  min-height: 100vh;
+}
+.nav {
+  width: 202px;
+  flex: 0 0 202px;
+  padding: 22px 14px 16px;
+  border-radius: 30px;
+  background: var(--glass-side);
+  border: 1px solid var(--bd);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--lift);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 26px;
+  height: calc(100vh - 86px);
+  min-height: 520px;
+  overflow: auto;
+}
+/* 品牌区：CSS 生成一个渐变方块 logo（不改 HTML） */
+.brand {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0 13px;
+  padding: 2px 12px 22px;
+  border-bottom: none;
+}
+.brand::before {
+  content: "W";
+  grid-row: 1 / 3;
+  grid-column: 1;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: linear-gradient(135deg,#6aa8ff,#a78bfa);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 17px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 10px 22px rgba(106,140,255,.32);
+}
+.brand .name { grid-column: 2; font-size: 16.5px; font-weight: 750; letter-spacing: .2px; color: var(--ink); }
+.brand .sub { grid-column: 2; font-size: 12.5px; color: var(--sub); font-family: var(--sans); margin-top: 1px; }
+
+.nav ul { list-style: none; padding: 0 6px; flex: 1; display: grid; gap: 6px; align-content: start; }
+.nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12.5px 16px;
+  border-radius: 16px;
+  color: var(--nav-ink);
+  text-decoration: none;
+  font-size: 14.5px;
+  transition: background .18s ease, color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.nav a:hover { background: rgba(255,255,255,.09); color: var(--ink); }
+.nav a.on {
+  background: var(--glass-strong);
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 8px 20px rgba(0,0,0,.28);
+}
+[data-theme="light"] .nav a:hover { background: rgba(255,255,255,.55); }
+[data-theme="light"] .nav a.on { color: var(--ink); box-shadow: inset 0 1px 0 #fff, 0 8px 20px rgba(90,70,150,.13); }
+.nav a svg { width: 17px; height: 17px; flex: none; opacity: .85; }
+
+.nav .sig {
+  margin-top: auto;
+  padding: 14px 12px 4px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  color: var(--sub);
+  font-family: var(--sans);
+}
+.nav .sig .row { display: flex; align-items: center; gap: 7px; }
+
+.main { flex: 1; min-width: 0; padding-top: 4px; }
+.topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; padding: 0 6px; }
+.topbar h2 { margin: 0; font-size: 27px; font-weight: 750; letter-spacing: .2px; }
+.topbar .sep { color: var(--ink-3); }
+.topbar .meta { color: var(--sub); font-size: 13px; }
+
+/* ── 通用控件 ── */
+button {
+  border: 1px solid var(--bd);
+  background: rgba(255,255,255,.06);
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 4px 14px rgba(0,0,0,.18);
+  transition: border-color .18s, box-shadow .18s, transform .18s, background .18s, color .18s;
+}
+button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 10px 26px rgba(0,0,0,.28); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary {
+  background: linear-gradient(135deg,#4d7cf0,#9a6af5);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 12px 26px rgba(106,120,255,.32);
+}
+button.primary:hover:not(:disabled) { filter: brightness(1.07); }
+button.ghost { background: transparent; box-shadow: none; }
+button.danger { color: var(--bad); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); }
+button.xs { padding: 6px 13px; font-size: 12.5px; border-radius: 12px; }
+button.icon { padding: 9px 12px; }
+/* 注意 :not(.primary):not(.danger)：浅色覆盖若写成裸 `button`，同特异性下会盖掉
+   主按钮/危险按钮的渐变（顺序在后），导致「添加账号」在浅色下几乎看不见。 */
+[data-theme="light"] button:not(.primary):not(.danger) { background: rgba(255,255,255,.55); box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 4px 14px rgba(90,70,150,.08); }
+[data-theme="light"] button:hover:not(:disabled) { box-shadow: inset 0 1px 0 #fff, 0 10px 26px rgba(90,70,150,.14); }
+[data-theme="light"] button.ghost { background: transparent; box-shadow: none; }
+
+input, select, textarea {
+  color: var(--ink);
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--bd);
+  border-radius: 16px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  transition: border-color .18s, box-shadow .18s;
+}
+input:focus, select:focus, textarea:focus { outline: none; border-color: rgba(140,170,255,.75); box-shadow: 0 0 0 5px rgba(120,160,255,.14); }
+input.invalid { border-color: var(--bad); background: var(--bad-soft); }
+input[type=checkbox] { width: auto; accent-color: #6aa8ff; }
+[data-theme="light"] input, [data-theme="light"] select, [data-theme="light"] textarea {
+  background: rgba(255,255,255,.6); box-shadow: inset 0 1px 0 rgba(255,255,255,.6);
+}
+[data-theme="light"] input:focus, [data-theme="light"] select:focus { border-color: rgba(140,170,255,.9); }
+
+.sel-note select {
+  background: rgba(255,255,255,.06) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 9px center;
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 5px 26px 5px 12px;
+  font: 600 12px var(--sans);
+}
+[data-theme="light"] .sel-note select { background-color: rgba(255,255,255,.6); }
+
+.tag { padding: 4px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 600; }
+.tag.ok    { background: var(--ok-soft);   color: var(--ok); }
+.tag.warn  { background: var(--warn-soft); color: var(--warn); }
+.tag.bad   { background: var(--bad-soft);  color: var(--bad); }
+.tag.mute  { background: rgba(255,255,255,.08); color: var(--sub); border: 1px solid var(--bd); }
+[data-theme="light"] .tag.mute { background: rgba(240,240,246,.85); }
+
+.chips .chip { padding: 4px 13px; border-radius: 99px; border: 1px solid var(--bd); background: rgba(255,255,255,.06); color: var(--sub); font-size: 12px; }
+.chips .chip.on { background: var(--glass-strong); color: var(--ink); border-color: transparent; font-weight: 700; }
+
+.pulse { box-shadow: 0 0 0 3px rgba(86,217,160,.18); }
+
+.hr { height: 1px; background: var(--line-soft); margin: 4px 0 16px; }
+.empty, .keyempty { color: var(--sub); }
+.empty .big, .keyempty .big { color: var(--ink-2); font-weight: 700; }
+.restart-note { color: var(--warn); }
+
+/* ── 玻璃面板容器：.box（面板自有类名）＝ syanUI .panel ── */
+.box {
+  background: var(--glass);
+  border: 1px solid var(--bd);
+  border-radius: 30px;
+  box-shadow: var(--lift);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  margin-bottom: 24px;
+  overflow: hidden;
+}
+.box > header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 26px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--glass-soft);
+}
+.box > header h3 { font-size: 17px; font-weight: 750; }
+.box > header h3 .hint { font-size: 12.5px; font-weight: 400; color: var(--sub); margin-left: 6px; }
+.box > header .note { color: var(--sub); font-size: 12.5px; }
+.box .pad { padding: 24px 28px 30px; }
+
+/* ── 统计卡：一条横条 → syanUI 的独立玻璃卡网格 ── */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 18px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+  margin-bottom: 24px;
+}
+.stat {
+  position: relative;
+  padding: 20px 24px 22px;
+  border: 1px solid var(--bd);
+  border-right: 1px solid var(--bd);
+  border-bottom: 1px solid var(--bd);
+  border-radius: 26px;
+  background: var(--glass);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--lift);
+  transition: transform .18s, box-shadow .18s;
+}
+.stat:hover { transform: translateY(-3px); }
+.stat .v { font: 750 25px/1.15 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.01em; white-space: nowrap; }
+.stat .k { color: var(--sub); font-size: 12.5px; margin-top: 7px; }
+.stat.good { background: linear-gradient(135deg, rgba(70,180,110,.30), rgba(255,255,255,.05)); }
+.stat.warn { background: linear-gradient(135deg, rgba(140,105,20,.42), rgba(255,255,255,.05)); }
+.stat.bad  { background: linear-gradient(135deg, rgba(150,40,55,.42),  rgba(255,255,255,.05)); }
+[data-theme="light"] .stat.good { background: linear-gradient(135deg, rgba(180,240,190,.45), rgba(255,255,255,.42)); }
+[data-theme="light"] .stat.warn { background: linear-gradient(135deg, rgba(255,240,200,.85), rgba(255,255,255,.42)); }
+[data-theme="light"] .stat.bad  { background: linear-gradient(135deg, rgba(255,215,220,.8),  rgba(255,255,255,.42)); }
+
+/* ── 表格：账号池主表 ── */
+.tbl-wrap { overflow-x: auto; }
+.acc { font-size: 13.5px; }
+.acc th {
+  text-align: left;
+  color: var(--sub);
+  font-weight: 650;
+  font-size: 12.5px;
+  padding: 13px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--glass-soft);
+  white-space: nowrap;
+}
+.acc td { padding: 14px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.acc tr:last-child td { border-bottom: none; }
+.acc tbody tr:hover { background: var(--row-hover); }
+.acc .mark i { width: 4px; border-radius: 0 3px 3px 0; min-height: 40px; background: var(--ok); }
+.acc tbody tr.cool .mark i { background: var(--warn); }
+.acc tbody tr.off .mark i { background: var(--bad); }
+
+.who .nm { font-weight: 650; font-size: 13.5px; }
+.who .id { font-family: var(--mono); font-size: 11.5px; color: var(--sub); }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.cred .n { font-family: var(--mono); font-size: 13px; }
+.cred .n .of { color: var(--sub); }
+.acts button { border-radius: 11px; }
+
+/* ── 弹窗 ── */
+.veil { background: rgba(10,12,24,.55); backdrop-filter: blur(26px) saturate(1.2); -webkit-backdrop-filter: blur(26px) saturate(1.2); }
+[data-theme="light"] .veil { background: rgba(244,240,255,.34); }
+.dlg {
+  background: var(--glass);
+  border: 1px solid var(--bd);
+  border-radius: 32px;
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--lift), 0 30px 90px rgba(0,0,0,.45);
+}
+[data-theme="light"] .dlg { box-shadow: var(--lift), 0 30px 90px rgba(90,70,150,.22); }
+.dlg header { padding: 24px 28px 18px; border-bottom: 1px solid var(--line-soft); }
+.dlg header h3 { font-size: 19px; font-weight: 750; }
+.dlg header .hint { color: var(--sub); font-size: 12.5px; }
+.dlg .body { padding: 22px 28px; }
+.dlg footer { padding: 18px 28px; border-top: 1px solid var(--line-soft); }
+.dlg .tabs { background: rgba(255,255,255,.07); border-radius: 14px; padding: 4px; }
+.dlg .tabs .tab { border-radius: 11px; padding: 6px 16px; font: 600 13px var(--sans); color: var(--sub); }
+.dlg .tabs .tab.on { background: var(--glass-strong); color: var(--ink); box-shadow: inset 0 1px 0 rgba(255,255,255,.18); }
+.tab-panel + .tab-panel { border-top: 1px solid var(--line-soft); margin: 0 -28px; padding: 16px 28px 0; }
+
+/* ── 浮动提示 ── */
+#toasts { right: 22px; bottom: 22px; gap: 10px; }
+.tst {
+  background: rgba(30,30,48,.82);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.18);
+  border-left: 1px solid rgba(255,255,255,.18);
+  border-radius: 18px;
+  padding: 13px 20px;
+  font-size: 13.5px;
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 16px 44px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.16);
+}
+.tst.ok  { border-left: 3px solid var(--ok); }
+.tst.err { background: #d92d45; border-left: 3px solid rgba(255,255,255,.5); }
+[data-theme="light"] .tst { background: rgba(30,30,48,.86); }
+
+/* ── 密钥管理视图 ── */
+.keylist { gap: 16px; padding: 20px 22px; }
+.keycard {
+  border: 1px solid var(--bd);
+  border-radius: 24px;
+  background: rgba(255,255,255,.05);
+  padding: 18px 20px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 12px 30px rgba(0,0,0,.16);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition: transform .18s, box-shadow .18s;
+}
+.keycard:hover { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 16px 36px rgba(0,0,0,.22); }
+[data-theme="light"] .keycard { background: rgba(255,255,255,.5); box-shadow: inset 0 1px 0 rgba(255,255,255,.6), 0 12px 30px rgba(90,70,150,.09); }
+[data-theme="light"] .keycard:hover { box-shadow: inset 0 1px 0 #fff, 0 16px 36px rgba(90,70,150,.14); }
+.keycard.off { opacity: .55; }
+.keycard .kc-dot { width: 9px; height: 9px; box-shadow: 0 0 0 3px rgba(86,217,160,.18); }
+.keycard.off .kc-dot { background: var(--ink-3); box-shadow: none; }
+.keycard .kc-name { font-weight: 750; font-size: 15.5px; }
+.keycard .kc-key {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: rgba(255,255,255,.07);
+  border: 1px solid var(--bd);
+  border-radius: 11px;
+  padding: 5px 11px;
+}
+[data-theme="light"] .keycard .kc-key { background: rgba(255,255,255,.6); }
+.keycard .kc-meta { gap: 7px 18px; margin-top: 11px; font-size: 12.5px; color: var(--ink-2); }
+.keycard .kc-meta b { font-weight: 650; color: var(--sub); font-size: 11.5px; }
+.keycard .kc-note { margin-top: 9px; font-size: 12px; color: var(--sub); }
+.keycard .kc-usage.over { color: var(--bad); font-weight: 700; }
+.keycard .kc-acts { gap: 7px; }
+
+/* 账号白名单多选器 */
+.acctpick {
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--bd);
+  border-radius: 20px;
+  padding: 14px 16px;
+  gap: 9px 18px;
+}
+[data-theme="light"] .acctpick { background: rgba(255,255,255,.5); }
+.acctpick-tools .cnt { color: var(--sub); }
+.acctpick label { font-size: 13px; color: var(--ink-2); }
+.acctpick .empty-tip { color: var(--sub); }
+
+/* ── 表单 / 弹窗内容 / 杂项：密钥表单与配置页共用，跟着玻璃风格一起走 ── */
+.fld { display: block; margin-bottom: 16px; }
+.fld > .lb { display: block; font-size: 12.5px; color: var(--sub); margin-bottom: 7px; font-weight: 650; }
+.fld > .hint, .hint { display: block; font-size: 11.5px; color: var(--sub); margin-top: 6px; }
+.inline { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-2); }
+.chk input[type=checkbox] { width: 17px; height: 17px; border-radius: 6px; }
+.grid2 { gap: 0 20px; }
+.grid3 { gap: 0 16px; }
+.savebar {
+  padding: 16px 22px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--glass-soft);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.badge {
+  font-size: 12.5px;
+  color: var(--sub);
+  background: rgba(255,255,255,.07);
+  border: 1px solid var(--bd);
+  border-radius: 99px;
+  padding: 6px 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+}
+[data-theme="light"] .badge { background: rgba(255,255,255,.55); box-shadow: inset 0 1px 0 rgba(255,255,255,.65); }
+.notice {
+  border-radius: 20px;
+  padding: 15px 20px;
+  font-size: 13.5px;
+  background: rgba(255,255,255,.07);
+  border: 1px solid var(--bd);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+.notice.warn { background: rgba(120,90,20,.34); border-color: rgba(250,220,140,.35); color: var(--warn); }
+.notice.warn b { color: var(--warn); margin-right: 8px; }
+[data-theme="light"] .notice.warn { background: rgba(255,247,225,.75); border-color: rgba(250,220,140,.75); color: #8a6d10; }
+[data-theme="light"] .notice.warn b { color: #a16207; }
+.icon-btn, .copy-btn {
+  border: 1px solid var(--bd);
+  background: rgba(255,255,255,.06);
+  border-radius: 12px;
+  color: var(--sub);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  transition: color .16s, transform .16s, box-shadow .16s;
+}
+.icon-btn:hover, .copy-btn:hover { color: #6aa8ff; transform: translateY(-1px); }
+.icon-btn.del:hover { color: var(--bad); background: var(--bad-soft); }
+[data-theme="light"] .icon-btn, [data-theme="light"] .copy-btn { background: rgba(255,255,255,.6); box-shadow: inset 0 1px 0 rgba(255,255,255,.7); }
+.url {
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--bd);
+  border-radius: 14px;
+  padding: 12px 15px;
+  font: 12px var(--mono);
+  color: var(--accent);
+}
+.switch { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+.switch:last-child { border-bottom: none; }
+.switch .lb { font-size: 13.5px; }
+.tc-empty { color: var(--sub); }
+.tc-empty .t { color: var(--ink-2); font-weight: 700; }
+/* ── 响应式：与 syanUI 断点保持一致 ── */
+@media (max-width: 1240px) {
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1000px) {
+  .shell { flex-direction: column; padding: 14px 16px 54px; }
+  .nav { width: 100%; flex: 0 0 auto; height: auto; min-height: 0; position: static; border-radius: 24px; }
+  .nav ul { display: flex; flex-wrap: wrap; }
+  .nav .sig { border-top: none; padding-top: 8px; }
+  .brand { padding-bottom: 14px; }
+}
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .box > header { padding: 15px 18px; }
+  .box .pad { padding: 18px 18px 22px; }
+  .topbar h2 { font-size: 21px; }
+  .keylist { padding: 16px; }
+}

@@ -19,3 +19,7 @@ Dockerfile text eol=lf
 *.ico     binary
 *.gz      binary
 *.zip     binary
+*.woff2   binary
+*.woff    binary
+*.ttf     binary
+*.otf     binary
