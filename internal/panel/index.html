@@ -382,10 +382,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .stat { border-right: none; border-bottom: 1px solid var(--line-soft); }
 }
   /* ── 用量视图 ───────────────────────────────────────────────── */
-  /* 用量分表区顶部的维度选择条：与上方「用量总览」解耦，四张分表共用一个选择器。 */
-  .usdims { display: flex; align-items: center; gap: 10px; margin: 0 2px 12px; }
-  .usdims .lb { font-size: 12px; color: var(--ink-3); }
-  .usdims .note { font-size: 11.5px; color: var(--ink-3); }
+  /* 视图内的筛选/维度选择条（用量分表区、积分构成）：
+     自绘下拉 + 说明文字，放在视图内容顶部，与上方总览/盒子解耦。 */
+  .filterbar { display: flex; align-items: center; gap: 10px; margin: 0 2px 12px; }
+  .filterbar .lb { font-size: 12px; color: var(--ink-3); }
+  .filterbar .grow { flex: 1; }
+  .filterbar .note { font-size: 11.5px; color: var(--ink-3); }
   .uschart { border: 1px solid var(--line-soft); border-radius: 8px; overflow: hidden; }
   .uschart-hd { display: flex; align-items: center; gap: 10px; padding: 9px 12px;
     border-bottom: 1px solid var(--line-soft); font-size: 12px; }
@@ -639,6 +641,21 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 
     <!-- 积分构成 -->
     <section class="view" id="view-packages" hidden>
+      <!-- 筛选：域（国内/国际）+ 账号。留空 = 全部，可多选；
+           下方三块（到期分布 / 账号对比 / 逐包明细）全部按此筛选后的账号集合渲染。 -->
+      <div class="filterbar">
+        <span class="lb">筛选</span>
+        <span class="sy-combo xs">
+          <button type="button" class="sy-combo-btn" id="pkRealmBtn" aria-haspopup="listbox"
+                  aria-expanded="false" title="按域筛选">域：全部</button>
+        </span>
+        <span class="sy-combo xs">
+          <button type="button" class="sy-combo-btn" id="pkAcctBtn" aria-haspopup="listbox"
+                  aria-expanded="false" title="按账号筛选">账号：全部</button>
+        </span>
+        <span class="grow"></span>
+        <span class="note">留空 = 全部；可多选</span>
+      </div>
       <div class="box">
         <header>
           <h3>积分到期分布</h3>
@@ -690,7 +707,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       </div>
 
       <!-- 维度选择：四张分表共用一个选择器，与上方「用量总览」解耦。 -->
-      <div class="usdims">
+      <div class="filterbar">
         <span class="lb">展示维度</span>
         <span class="sy-combo xs">
           <button type="button" class="sy-combo-btn" id="usDimBtn" aria-haspopup="listbox"

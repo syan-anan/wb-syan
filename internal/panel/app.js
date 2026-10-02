@@ -1958,9 +1958,11 @@ function summarizeCreditDays(list, now) {
   return { rows, accountCount: (list || []).length, unavailable };
 }
 
-function renderExpiryDistribution(list, now) {
+function renderExpiryDistribution(list, now, colorBase) {
   const summary = summarizeCreditDays(list, now);
-  const colors = pkAccountColorMap(list);
+  // 颜色基数恒为全量账号（colorBase）：否则一筛选颜色全变，
+  // 图例与图上色块对不上。
+  const colors = pkAccountColorMap(colorBase || list);
   const rows = summary.rows.map(row => {
     const total = row.credits || 1;
     const nodes = row.segments.map(segment => {
@@ -1991,23 +1993,34 @@ function renderExpiryDistribution(list, now) {
     '<div class="pk-expiry-foot">' + esc(foot) + '</div>';
 }
 
+
 function renderPackages(d, detailLimit) {
-  const list = (d.accounts || []);
+  const all = (d.accounts || []);
+  // 筛选只决定「看哪些账号」；颜色基数恒为全量，否则一筛选
+  // 颜色全变，图例失去意义。
+  pkFilterSync(all);
+  const list = all.filter(a =>
+    (!pkRealmSel.size || pkRealmSel.has(String(a.realm || ''))) &&
+    (!pkAcctSel.size || pkAcctSel.has(String(a.uid))));
   const now = Date.now();
-  const expiryColors = pkAccountColorMap(list);
-  renderExpiryDistribution(list, now);
+  const expiryColors = pkAccountColorMap(all);
+  renderExpiryDistribution(list, now, all);
   if (!list.length) {
-    $('pkSummary').innerHTML = '<div class="empty">没有账号</div>';
+    $('pkSummary').innerHTML = '<div class="empty">' +
+      (all.length ? '当前筛选下没有账号（共 ' + all.length + ' 个）' : '没有账号') + '</div>';
+    $('pkDetail').innerHTML = '';
+    $('pkNote').textContent = '0 / ' + all.length + ' 个账号 · 实时查询上游';
     return;
   }
 
   // 包名 → 稳定色号（跨账号一致，方便肉眼对齐）
+  // 包名颜色与标签也按全量算：筛选只减行，不换色。
   const names = [];
-  for (const a of list) for (const s of pkBySource(a.packages || [])) {
+  for (const a of all) for (const s of pkBySource(a.packages || [])) {
     if (!names.includes(s.key)) names.push(s.key);
   }
   names.sort((x, y) => {
-    const sz = n => Math.max(...list.map(a => {
+    const sz = n => Math.max(...all.map(a => {
       const f = pkBySource(a.packages || []).find(s => s.key === n);
       return f ? f.size : 0;
     }));
@@ -2016,9 +2029,9 @@ function renderPackages(d, detailLimit) {
   const colorOf = n => pkColor(names.indexOf(n));
   // 键 → 展示名，供卡片与明细表共用（同一来源必然同色同名）。
   const labelOf = {};
-  for (const a of list) for (const s of pkBySource(a.packages || [])) labelOf[s.key] = s;
+  for (const a of all) for (const s of pkBySource(a.packages || [])) labelOf[s.key] = s;
 
-  const maxRemain = Math.max(1, ...list.map(a => Number(a.remain || 0)));
+  const maxRemain = Math.max(1, ...all.map(a => Number(a.remain || 0)));
 
   $('pkSummary').innerHTML = list.map(a => {
     if (a.error) {
@@ -2062,7 +2075,9 @@ function renderPackages(d, detailLimit) {
       '</div>';
   }).join('');
 
-  $('pkNote').textContent = list.length + ' 个账号 · 实时查询上游';
+  $('pkNote').textContent = (list.length === all.length
+    ? list.length + ' 个账号'
+    : list.length + ' / ' + all.length + ' 个账号（已筛选）') + ' · 实时查询上游';
 
   // 逐包明细：每个账号一个表，包的**面额**列是重点
   $('pkDetail').innerHTML = list.map(a => {
@@ -2115,6 +2130,149 @@ function renderPackages(d, detailLimit) {
   }).join('');
 }
 
+/* ── 通用自绘多选下拉（积分构成页的域/账号筛选用）─────────
+   与用量维度多选同一套视觉与交互（.sy-combo / .sy-combo-menu / .sy-combo-item.on），
+   区别是选项集合**动态**：账号随每次刷新变化，所以菜单项由 render() 重建，
+   而不是像 enhanceSelect 那样初始化时把 <option> 拷一次。
+   语义：空集合 = 全部（不筛）。 */
+function syMultiMenu(btn, onPick) {
+  const menu = document.createElement('div');
+  menu.className = 'sy-combo-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.setAttribute('aria-multiselectable', 'true');
+  document.body.appendChild(menu);
+
+  let open = false;
+  const close = () => {
+    if (!open) return;
+    open = false; menu.classList.remove('on'); btn.setAttribute('aria-expanded', 'false');
+    const i = SY_COMBO_CLOSERS.indexOf(close);
+    if (i >= 0) SY_COMBO_CLOSERS.splice(i, 1);
+  };
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    menu.style.minWidth = Math.round(r.width) + 'px';
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    let left = r.left;
+    if (left + w > innerWidth - 8) left = Math.max(8, innerWidth - 8 - w);
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) {
+      const up = r.top - 6 - h;
+      top = up >= 8 ? up : Math.max(8, innerHeight - 8 - h);
+    }
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+  };
+  btn.onclick = ev => {
+    ev.preventDefault();
+    if (open) { close(); return; }
+    syComboCloseAll(close);
+    open = true; menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true');
+    SY_COMBO_CLOSERS.push(close);
+    requestAnimationFrame(() => { if (open) place(); });
+  };
+  return {
+    close: close,
+    // render(items) 重建菜单项；items = [{key, label, on}]。
+    render: items => {
+      menu.innerHTML = '';
+      for (const it of items) {
+        const el = document.createElement('div');
+        el.className = 'sy-combo-item' + (it.on ? ' on' : '');
+        el.setAttribute('role', 'option');
+        el.textContent = it.label;
+        el.onclick = () => { onPick(it.key); };
+        menu.appendChild(el);
+      }
+    },
+  };
+}
+
+/* ── 积分构成页筛选（域 / 账号）────────────────────────────────
+   三块内容（到期分布 / 账号对比 / 逐包明细）共用同一份筛选后的账号集合。
+   语义与用量维度多选一致：留空 = 全部；两项都留空 = 改造前效果。 */
+const pkRealmSel = new Set();  // 'cn' / 'global'
+const pkAcctSel = new Set();   // uid
+let pkFilterMenus = null;
+let pkLastData = null;
+let pkLastLimit = PK_DEFAULT_DETAIL_LIMIT;
+
+function pkRealmLabel(r) {
+  return r === 'cn' ? '国内' : r === 'global' ? '国际' : r;
+}
+
+function pkFilterLabel(prefix, sel, labelOf) {
+  if (!sel.size) return prefix + '：全部';
+  const keys = [...sel];
+  if (keys.length === 1) return prefix + '：' + labelOf(keys[0]);
+  return prefix + '：' + keys.length + ' 个';
+}
+
+/* pkFilterInit 建两个多选下拉（只建一次）。 */
+function pkFilterInit() {
+  const realmBtn = $('pkRealmBtn');
+  const acctBtn = $('pkAcctBtn');
+  if (!realmBtn || !acctBtn || pkFilterMenus) return;
+  const pick = (sel, key) => {
+    if (key === '__all') sel.clear();
+    else if (sel.has(key)) sel.delete(key);
+    else sel.add(key);
+    pkRender();
+  };
+  pkFilterMenus = {
+    realm: syMultiMenu(realmBtn, key => pick(pkRealmSel, key)),
+    acct: syMultiMenu(acctBtn, key => pick(pkAcctSel, key)),
+  };
+}
+
+/* pkFilterSync 用本次拿到的**全量**账号刷新两个下拉的选项与按钮文字。 */
+function pkFilterSync(all) {
+  const realms = [];
+  for (const a of all) {
+    const r = String(a.realm || '');
+    if (r && !realms.includes(r)) realms.push(r);
+  }
+  realms.sort();
+  const accts = all.filter(a => a && a.uid).slice().sort((x, y) =>
+    String(x.nickname || x.uid).localeCompare(String(y.nickname || y.uid)));
+  const nameOf = uid => {
+    const a = accts.find(x => String(x.uid) === uid);
+    return a ? String(a.nickname || uid.slice(0, 8)) : uid.slice(0, 8);
+  };
+  // 选择集里已经消失的账号/域清掉：否则筛到一个不存在的号
+  // → 永远空表，而按钮上又看不出问题。
+  for (const uid of [...pkAcctSel]) {
+    if (!accts.some(a => String(a.uid) === uid)) pkAcctSel.delete(uid);
+  }
+  for (const r of [...pkRealmSel]) {
+    if (!realms.includes(r)) pkRealmSel.delete(r);
+  }
+  if (pkFilterMenus) {
+    pkFilterMenus.realm.render(
+      [{ key: '__all', label: '全部', on: !pkRealmSel.size }].concat(
+        realms.map(r => ({ key: r, label: pkRealmLabel(r), on: pkRealmSel.has(r) }))));
+    pkFilterMenus.acct.render(
+      [{ key: '__all', label: '全部', on: !pkAcctSel.size }].concat(
+        accts.map(a => ({
+          key: String(a.uid),
+          label: String(a.nickname || String(a.uid).slice(0, 8)) + '（' +
+            pkRealmLabel(String(a.realm || '')) + '）',
+          on: pkAcctSel.has(String(a.uid)),
+        }))));
+  }
+  const rb = $('pkRealmBtn');
+  const ab = $('pkAcctBtn');
+  if (rb) rb.textContent = pkFilterLabel('域', pkRealmSel, pkRealmLabel);
+  if (ab) ab.textContent = pkFilterLabel('账号', pkAcctSel, nameOf);
+}
+
+function pkRender() {
+  if (!pkLastData) return;
+  renderPackages(pkLastData, pkLastLimit);
+}
+
+pkFilterInit();
+
 if ($('pkDetail')) $('pkDetail').addEventListener('click', ev => {
   const btn = ev.target.closest('button[data-pk-group]');
   if (!btn) return;
@@ -2148,7 +2306,9 @@ async function loadPackages() {
       api('packages'),
       api('config').catch(() => null),
     ]);
-    renderPackages(d, pkDetailLimit(c && c.config));
+    pkLastData = d;
+    pkLastLimit = pkDetailLimit(c && c.config);
+    renderPackages(pkLastData, pkLastLimit);
   } catch (e) {
     $('pkSummary').innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>';
     $('pkExpiry').innerHTML = '<div class="pk-expiry-empty">读取失败：' + esc(e.message) + '</div>';
