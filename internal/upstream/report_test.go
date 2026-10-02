@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/auth"
 )
 
 // TestReportChatActivitySendsArrayWithUserID 断言出站 body 是数组、含 userId、eventCode 正确。
@@ -31,7 +31,7 @@ func TestReportChatActivitySendsArrayWithUserID(t *testing.T) {
 	defer srv.Close()
 
 	c := &Client{HTTP: srv.Client(), BillingBaseCN: srv.URL}
-	if err := c.ReportChatActivity(&auth.Auth{AccessToken: "at", UID: "u-active"}, "wb2api-123", ""); err != nil {
+	if err := c.ReportChatActivity(&auth.Auth{AccessToken: "at", UID: "u-active"}, "wb-syan-123", ""); err != nil {
 		t.Fatalf("report: %v", err)
 	}
 	if len(got) != 1 {
@@ -44,8 +44,8 @@ func TestReportChatActivitySendsArrayWithUserID(t *testing.T) {
 	if ev["userId"] != "u-active" {
 		t.Errorf("userId=%v want u-active（缺失则服务端 200 但静默丢弃）", ev["userId"])
 	}
-	if ev["conversationId"] != "wb2api-123" {
-		t.Errorf("conversationId=%v want wb2api-123", ev["conversationId"])
+	if ev["conversationId"] != "wb-syan-123" {
+		t.Errorf("conversationId=%v want wb-syan-123", ev["conversationId"])
 	}
 	if ev["mode"] != "craft" {
 		t.Errorf("mode=%v want craft", ev["mode"])

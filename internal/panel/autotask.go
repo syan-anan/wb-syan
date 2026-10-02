@@ -32,9 +32,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/logfmt"
+	"github.com/syan-anan/wb-syan/internal/upstream"
 )
 
 // autoAction 一个可自动化的任务动作。
@@ -378,7 +378,7 @@ func (p *Panel) runMPMiniChatTask(a *auth.Auth, code string, withActivityId bool
 	need := target - t.Current
 	for i := int64(0); i < need; i++ {
 		time.Sleep(mpChatEventGap + time.Duration(rand.Int64N(int64(10*time.Second))))
-		conv := fmt.Sprintf("wb2api-mp-%d-%d", time.Now().UnixMilli(), i)
+		conv := fmt.Sprintf("wb-syan-mp-%d-%d", time.Now().UnixMilli(), i)
 		var ev map[string]any
 		if withActivityId {
 			ev = upstream.SchoolSeasonChatEvent(conv)
@@ -515,7 +515,7 @@ func (p *Panel) runSequentialEventTask(a *auth.Auth, code string, primary, fallb
 func runSequentialAutomation(p *Panel, a *auth.Auth) (string, error) {
 	return p.runSequentialEventTask(a, "Sequential_Tasks_4",
 		func() error {
-			return p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopAutomationCreateEvent("wb2api 自动化"))
+			return p.cfg.Upstream.ReportDesktopEvent(a, upstream.DesktopAutomationCreateEvent("wb-syan 自动化"))
 		}, nil)
 }
 
@@ -525,11 +525,11 @@ func runSequentialAutomation(p *Panel, a *auth.Auth) (string, error) {
 func runSequentialModelChat(p *Panel, a *auth.Auth) (string, error) {
 	return p.runSequentialEventTask(a, "Sequential_Tasks_5",
 		func() error {
-			conv := fmt.Sprintf("wb2api-mp-glm-%d", time.Now().UnixMilli())
+			conv := fmt.Sprintf("wb-syan-mp-glm-%d", time.Now().UnixMilli())
 			return p.cfg.Upstream.ReportMPEvent(a, upstream.MiniChatModelEvent(conv, "glm-5.2", "GLM-5.2"))
 		},
 		func() error {
-			return p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb2api-mp-glm-%d", time.Now().UnixMilli()), "", "glm-5.2", "GLM-5.2")
+			return p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb-syan-mp-glm-%d", time.Now().UnixMilli()), "", "glm-5.2", "GLM-5.2")
 		})
 }
 
@@ -540,8 +540,8 @@ func runSequentialPlaybook(p *Panel, a *auth.Auth) (string, error) {
 	ms := time.Now().UnixMilli()
 	return p.runSequentialEventTask(a, "Sequential_Tasks_7",
 		func() error {
-			conv := fmt.Sprintf("wb2api-pb-%d", ms)
-			req := fmt.Sprintf("wb2api-pb-req-%d", ms)
+			conv := fmt.Sprintf("wb-syan-pb-%d", ms)
+			req := fmt.Sprintf("wb-syan-pb-req-%d", ms)
 			return p.cfg.Upstream.ReportDesktopEvent(a,
 				upstream.DesktopPlaybookPromptSequence(conv, req, "pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")...)
 		},
@@ -790,7 +790,7 @@ func runChat5(p *Panel, a *auth.Auth) (string, error) {
 		return "进度已达标，无需上报", nil
 	}
 	for i := int64(0); i < need; i++ {
-		cid := fmt.Sprintf("wb2api-chat5-%d-%d", time.Now().UnixMilli(), i)
+		cid := fmt.Sprintf("wb-syan-chat5-%d-%d", time.Now().UnixMilli(), i)
 		if err := p.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
 			return fmt.Sprintf("上报第 %d/%d 条失败: %v", i+1, need, err), nil
 		}
@@ -803,7 +803,7 @@ func runChat5(p *Panel, a *auth.Auth) (string, error) {
 
 // runFirstBuddy 领养：report（解锁前置）→ agreement → first。
 func runFirstBuddy(p *Panel, a *auth.Auth) (string, error) {
-	if err := p.cfg.Upstream.ReportChatActivity(a, fmt.Sprintf("wb2api-adopt-%d", time.Now().UnixMilli()), ""); err != nil {
+	if err := p.cfg.Upstream.ReportChatActivity(a, fmt.Sprintf("wb-syan-adopt-%d", time.Now().UnixMilli()), ""); err != nil {
 		return "", fmt.Errorf("前置上报: %w", err)
 	}
 	time.Sleep(reportGap) // 给上游事件处理留时间（脚本实测口径）
@@ -848,7 +848,7 @@ func runModelChat(p *Panel, a *auth.Auth) (string, error) {
 	rc.Close()
 	time.Sleep(reportGap)
 	// 3. 对齐模型的上报（触发进度）
-	if err := p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb2api-glm52-%d", time.Now().UnixMilli()), "", modelID, modelName); err != nil {
+	if err := p.cfg.Upstream.ReportChatActivityModel(a, fmt.Sprintf("wb-syan-glm52-%d", time.Now().UnixMilli()), "", modelID, modelName); err != nil {
 		return "对话已完成，但进度上报失败：" + err.Error(), nil
 	}
 	return "已完成 glm-5.2 对话并上报", nil
@@ -862,8 +862,8 @@ func runModelChat(p *Panel, a *auth.Auth) (string, error) {
 // Hp_Appearance 的纯 API set 不计分（需客户端在主题下活跃），区别对待。
 func runRichMeow(p *Panel, a *auth.Auth) (string, error) {
 	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-rm-%d", ms)
-	req := fmt.Sprintf("wb2api-rm-req-%d", ms)
+	conv := fmt.Sprintf("wb-syan-rm-%d", ms)
+	req := fmt.Sprintf("wb-syan-rm-req-%d", ms)
 	msg := fmt.Sprintf("req-%d-user", ms)
 	events := upstream.DesktopChatSequence(conv, req, msg, "fast-model", "fast-model")
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
@@ -890,7 +890,7 @@ func runBuddyApp(p *Panel, a *auth.Auth) (string, error) {
 // 无需真实创建定时任务。
 func runAutomationCreate(p *Panel, a *auth.Auth) (string, error) {
 	if err := p.cfg.Upstream.ReportDesktopEvent(a,
-		upstream.DesktopAutomationCreateEvent("wb2api 自动化")); err != nil {
+		upstream.DesktopAutomationCreateEvent("wb-syan 自动化")); err != nil {
 		return "", err
 	}
 	return "已上报定时任务创建事件", nil
@@ -1038,8 +1038,8 @@ func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
 	templates := [][2]string{{"1", "深度研究"}, {"2", "周报生成"}, {"3", "竞品分析"}, {"4", "活动策划"}, {"5", "代码评审"}}
 	for i, tp := range templates {
 		ms := time.Now().UnixMilli()
-		conv := fmt.Sprintf("wb2api-tpl-%d-%d", ms, i)
-		req := fmt.Sprintf("wb2api-tpl-req-%d-%d", ms, i)
+		conv := fmt.Sprintf("wb-syan-tpl-%d-%d", ms, i)
+		req := fmt.Sprintf("wb-syan-tpl-req-%d-%d", ms, i)
 		events := upstream.DesktopTemplateUseSequence(conv, req, tp[0], tp[1])
 		if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 			return fmt.Sprintf("第 %d 组模板事件上报失败: %v", i+1, err), nil
@@ -1053,8 +1053,8 @@ func runTemplateUse(p *Panel, a *auth.Auth) (string, error) {
 // 判据是 playbook_prompt_send（Dialog 发送）而非卡片曝光/点击——asar 逆向确认。
 func runPlaybookPrompt(p *Panel, a *auth.Auth) (string, error) {
 	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-pb-%d", ms)
-	req := fmt.Sprintf("wb2api-pb-req-%d", ms)
+	conv := fmt.Sprintf("wb-syan-pb-%d", ms)
+	req := fmt.Sprintf("wb-syan-pb-req-%d", ms)
 	events := upstream.DesktopPlaybookPromptSequence(conv, req, "pm-gtm-launch-plan", "新产品上市 GTM 发布计划一页纸")
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 		return "", err
@@ -1066,8 +1066,8 @@ func runPlaybookPrompt(p *Panel, a *auth.Auth) (string, error) {
 // 判据是 wbx_design_canvas_task_create/open（Ardot create_design 工具完成遥测）。
 func runCreateCanvas(p *Panel, a *auth.Auth) (string, error) {
 	ms := time.Now().UnixMilli()
-	conv := fmt.Sprintf("wb2api-canvas-%d", ms)
-	req := fmt.Sprintf("wb2api-canvas-req-%d", ms)
+	conv := fmt.Sprintf("wb-syan-canvas-%d", ms)
+	req := fmt.Sprintf("wb-syan-canvas-req-%d", ms)
 	events := upstream.DesktopDesignCanvasSequence(conv, req)
 	if err := p.cfg.Upstream.ReportDesktopEvent(a, events...); err != nil {
 		return "", err

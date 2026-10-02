@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/pool"
+	"github.com/syan-anan/wb-syan/internal/upstream"
 )
 
 func TestNextFire(t *testing.T) {

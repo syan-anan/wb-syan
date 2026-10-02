@@ -10,12 +10,12 @@
 | Docker Compose | v2（`docker compose`，非 `docker-compose`） |
 | 架构 | linux/amd64 或 linux/arm64（镜像双架构） |
 | 磁盘 | 预留 1 GB 足够 |
-| 端口 | 默认 7863，需放行 |
+| 端口 | 宿主机默认 **18888**（容器内固定 7863），需放行 |
 
 ## 2. 从零部署
 
 ```bash
-git clone https://github.com/syan-anan/workbuddy2api-panel.git
+git clone https://github.com/syan-anan/wb-syan.git
 cd <repo>
 
 cp .env.example .env                 # 可选：填 GHCR_IMAGE / PANEL_PORT / PUID / PGID
@@ -30,17 +30,17 @@ docker compose pull && docker compose up -d
 健康检查：
 
 ```bash
-curl -s http://127.0.0.1:7863/healthz
+curl -s http://127.0.0.1:18888/healthz
 ```
 
-面板：`http://<主机IP>:7863/panel/`
+面板：`http://<主机IP>:18888/panel/`
 
 ## 3. 构建过程说明
 
 `Dockerfile` 是两段式：
 
 1. **build 阶段** `golang:1.23-alpine`：`go mod download` → 编译 4 个二进制
-   （`wb2api` / `signin_bin` / `login` / `credit`），全部 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`。
+   （`wb-syan` / `signin_bin` / `login` / `credit`），全部 `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`。
 2. **运行阶段** `alpine:3.20`：装 `wget ca-certificates tzdata python3 bash`，建 uid `10001` 的 `app` 用户，
    脚本做 CRLF→LF 并 `chmod 755`，`HEALTHCHECK` 打 `/healthz`。
 
@@ -78,7 +78,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 
 ```bash
 # 备份（数据全在挂载目录里）
-tar czf wb2api-backup-$(date +%F).tar.gz auths data config.json
+tar czf wb-syan-backup-$(date +%F).tar.gz auths data config.json
 
 # 回滚
 docker compose down
@@ -109,5 +109,5 @@ docker compose up -d --build                    # 或本地重建
 ```bash
 go build ./...
 go test ./...
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wb2api ./cmd/server
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o wb-syan ./cmd/server
 ```

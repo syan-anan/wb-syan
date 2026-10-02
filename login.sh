@@ -8,12 +8,12 @@
 #   1. POST /v2/plugin/auth/state 拿授权 URL（无 PKCE，state 由服务端签发）
 #   2. 你在浏览器打开 URL 完成登录
 #   3. 回到这里按 y → poll 拿 token+uid+nickname → 签到 → 落盘 auths/workbuddy-<uid>.json
-#   4. 重启 workbuddy2api 容器加载新账号
+#   4. 重启 wb-syan 容器加载新账号
 set -euo pipefail
 
 cd "$(dirname "$0")"
 AUTH_DIR="./auths"
-CONTAINER="workbuddy2api"
+CONTAINER="wb-syan"
 
 mkdir -p "$AUTH_DIR"
 

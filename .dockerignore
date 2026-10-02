@@ -16,9 +16,9 @@ scripts/__pycache__/
 # 根目录本地构建产物（镜像内由多阶段构建重新编译）
 /login
 /credit
-/wb2api
+/wb-syan
 /signin_bin
-/wb2api.exe
+/wb-syan.exe
 *.zip
 
 # 文档与许可证不进运行镜像

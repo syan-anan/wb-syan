@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
+	"github.com/syan-anan/wb-syan/internal/keys"
 )
 
 // Snapshot 一次读取的不可变配置视图。

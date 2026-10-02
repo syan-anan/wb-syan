@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/auth"
 )
 
 // TestNoteSessionDeadThresholdNotReached 前 2 次连续 12153 不 Disable（误判防护）。

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/auth"
 )
 
 // TestDeviceTokenInjected_WhenSet auth.Auth.DeviceToken 非空时 chat/billing 请求均注入。

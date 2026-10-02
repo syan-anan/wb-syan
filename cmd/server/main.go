@@ -1,4 +1,4 @@
-// main.go workbuddy2api 入口：加载配置、构建 pool、起调度器与 HTTP 服务。
+// main.go wb-syan 入口：加载配置、构建 pool、起调度器与 HTTP 服务。
 package main
 
 import (
@@ -17,17 +17,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/keys"
+	"github.com/syan-anan/wb-syan/internal/livecfg"
+	"github.com/syan-anan/wb-syan/internal/panel"
+	"github.com/syan-anan/wb-syan/internal/pool"
+	"github.com/syan-anan/wb-syan/internal/redisstore"
+	"github.com/syan-anan/wb-syan/internal/scheduler"
+	"github.com/syan-anan/wb-syan/internal/server"
+	"github.com/syan-anan/wb-syan/internal/session"
+	"github.com/syan-anan/wb-syan/internal/upstream"
+	"github.com/syan-anan/wb-syan/internal/usage"
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
@@ -309,7 +309,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("workbuddy2api listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
+	log.Printf("wb-syan listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}

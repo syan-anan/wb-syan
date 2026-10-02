@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
+	"github.com/syan-anan/wb-syan/internal/keys"
 )
 
 // keyView 子密钥的对外视图：只回显掩码，绝不回显明文（明文仅在创建时一次性返回）。

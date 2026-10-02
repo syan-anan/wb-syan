@@ -64,12 +64,12 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -ldflags "-s -w" -o "wb2api${{ matrix.goos == 'windows' && '.exe' || '' }}" ./cmd/server
+        run: go build -ldflags "-s -w" -o "wb-syan${{ matrix.goos == 'windows' && '.exe' || '' }}" ./cmd/server
 
       # 版本串断言：二进制必须含源码 appVersion（防交叉编译矩阵里编错树/漏 ldflags）
       - name: 断言二进制版本串
         run: |
-          BIN="wb2api${{ matrix.goos == 'windows' && '.exe' || '' }}"
+          BIN="wb-syan${{ matrix.goos == 'windows' && '.exe' || '' }}"
           if ! grep -qa "${{ steps.ver.outputs.v }}" "$BIN"; then
             echo "::error::binary missing version string ${{ steps.ver.outputs.v }}"
             exit 1
@@ -79,15 +79,15 @@ jobs:
       - name: 打包（windows=zip 三件套，其余=tar.gz）
         run: |
           V="${{ steps.ver.outputs.v }}"
-          V="${V%-panel}"   # 文件名不带 -panel 后缀（wb2api-panel-v1.2.3-... 既有惯例）
+          V="${V%-panel}"   # 文件名不带 -panel 后缀（wb-syan-panel-v1.2.3-... 既有惯例）
           case "${{ matrix.goos }}" in
             windows)
-              NAME="wb2api-panel-v${V}-windows-amd64.zip"
-              zip -q "$NAME" wb2api.exe config.example.json README.md
+              NAME="wb-syan-panel-v${V}-windows-amd64.zip"
+              zip -q "$NAME" wb-syan.exe config.example.json README.md
               ;;
             *)
-              NAME="wb2api-panel-v${V}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
-              tar czf "$NAME" wb2api config.example.json README.md
+              NAME="wb-syan-panel-v${V}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+              tar czf "$NAME" wb-syan config.example.json README.md
               ;;
           esac
           echo "name=$NAME" >> "$GITHUB_ENV"

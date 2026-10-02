@@ -19,7 +19,7 @@
 """
 import json, os, sys, time, glob, argparse, urllib.request, urllib.error
 
-AUTHS = "/root/workbuddy2api/auths"
+AUTHS = "/root/wb-syan/auths"
 CHAT_BASE = "https://copilot.tencent.com"   # growth / report
 BILL_BASE = "https://www.codebuddy.cn"      # billing / report
 

@@ -7,8 +7,8 @@
 //	go run ./cmd/trial
 //
 //	# 容器内：先 cp 进去再 exec
-//	docker cp trial workbuddy2api:/tmp/trial
-//	docker exec -w /app workbuddy2api /tmp/trial
+//	docker cp trial wb-syan:/tmp/trial
+//	docker exec -w /app wb-syan /tmp/trial
 //
 // 结果逐账号输出到 stdout：
 //
@@ -25,8 +25,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/upstream"
 )
 
 // classifyTrial 归一化 ClaimTrial 结果（纯函数，供 main 循环与测试直接断言）：

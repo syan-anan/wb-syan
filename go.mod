@@ -1,4 +1,4 @@
-module github.com/linguo2625469/workbuddy2api-panel
+module github.com/syan-anan/wb-syan
 
 go 1.22.5
 

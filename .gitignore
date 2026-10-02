@@ -13,9 +13,9 @@ backups/
 # ===== 本地构建产物（二进制走 CI / GitHub Release）=====
 /login
 /credit
-/wb2api
+/wb-syan
 /signin_bin
-/wb2api.exe
+/wb-syan.exe
 /login.exe
 /credit.exe
 /server.exe

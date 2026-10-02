@@ -3,7 +3,7 @@
 // 两个子命令，由 login.sh 顺序驱动：
 //
 //	login [--realm=cn|global] url   → POST /v2/plugin/auth/state?platform=CLI 拿 state+authUrl，
-//	                                  state 落 /tmp/wb2api-login-state.json，stdout 打印授权 URL
+//	                                  state 落 /tmp/wb-syan-login-state.json，stdout 打印授权 URL
 //	login [--realm=cn|global] poll  → 读 state，GET /v2/plugin/auth/token?state= 一次，
 //	                                  成功再 GET /v2/plugin/login/account?state= 拿 uid/nickname，
 //	                                  stdout 打印完整 token+account JSON（含 realm 键）
@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	auth2 "github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	auth2 "github.com/syan-anan/wb-syan/internal/auth"
 )
 
 // 上游常量：CN → copilot.tencent.com（Origin 为 codebuddy.cn）；global → www.workbuddy.ai
@@ -47,7 +47,7 @@ const (
 // Portable across OSes: the upstream hardcoded "/tmp/...", which on
 // Windows resolves to <drive>:\tmp\... and aborts the OAuth flow with
 // "The system cannot find the path specified". os.TempDir() is /tmp on Linux.
-var stateFile = filepath.Join(os.TempDir(), "wb2api-login-state.json")
+var stateFile = filepath.Join(os.TempDir(), "wb-syan-login-state.json")
 
 // exitFunc 供测试替换（默认 os.Exit；测试持临时替换为 panic 以进程内捕获 fatal）。
 var exitFunc = os.Exit

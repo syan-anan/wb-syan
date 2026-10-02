@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/auth"
 )
 
 // allowPool 构造 3 账号全 healthy 的池（关闭防撞号窗口，便于确定性断言）。

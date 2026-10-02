@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
-	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
+	"github.com/syan-anan/wb-syan/internal/keys"
+	"github.com/syan-anan/wb-syan/internal/prompt"
 )
 
 // Config 顶层配置。
