@@ -658,6 +658,10 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <h3>用量总览</h3>
           <span class="grow"></span>
           <span class="note" id="usNote">—</span>
+          <span class="sy-combo xs">
+            <button type="button" class="sy-combo-btn" id="usDimBtn" aria-haspopup="listbox"
+                    aria-expanded="false" title="选择要展示的维度">全部</button>
+          </span>
           <select id="usWindow" class="xs">
             <option value="24">近 24 小时</option>
             <option value="72" selected>近 3 天</option>
@@ -680,7 +684,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </div>
       </div>
 
-      <div class="box">
+      <div class="box" id="usAccBox">
         <header><h3>按账号</h3><span class="grow"></span>
           <span class="note">请求数含失败尝试</span></header>
         <div class="tbl-wrap">
@@ -696,7 +700,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </div>
       </div>
 
-      <div class="box">
+      <div class="box" id="usModelBox">
         <header><h3>按模型</h3></header>
         <div class="tbl-wrap">
           <table class="acc">
@@ -710,7 +714,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </div>
       </div>
 
-      <div class="box">
+      <div class="box" id="usRealmBox">
         <header><h3>按域</h3></header>
         <div class="tbl-wrap">
           <table class="acc">
@@ -724,7 +728,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </div>
       </div>
 
-      <div class="box">
+      <div class="box" id="usClientBox">
         <header><h3>按客户端</h3><span class="grow"></span>
           <span class="note">识别不到的显示原始 UA 首段</span></header>
         <div class="tbl-wrap">

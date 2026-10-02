@@ -148,6 +148,102 @@ document.addEventListener('pointerdown', ev => {
   if (t && t.closest && t.closest('.sy-combo, .sy-combo-menu')) return;
   syComboCloseAll();
 }, true);
+
+/* ── 用量维度多选（自绘，复用 .sy-combo 的视觉语言）：四张分表各自显隐。
+   语义与用户约定一致：四项全选 = 「全部」（默认，等同改造前的整页效果）；
+   取消最后一项时保持不动，避免整页空掉。按钮文字即当前选择，不再额外加图例。
+   浮层挂 body：.box 有 backdrop-filter + overflow:hidden，会同时成为 fixed
+   后代的包含块并把它裁掉（与 enhanceSelect 同一个坑）。 */
+const US_DIMS = [
+  { key: 'account', label: '按账号', box: 'usAccBox' },
+  { key: 'model', label: '按模型', box: 'usModelBox' },
+  { key: 'realm', label: '按域', box: 'usRealmBox' },
+  { key: 'client', label: '按客户端', box: 'usClientBox' },
+];
+const usDimOn = new Set(US_DIMS.map(d => d.key));
+
+function usDimSync() {
+  for (const d of US_DIMS) {
+    const box = $(d.box);
+    if (box) box.hidden = !usDimOn.has(d.key);
+  }
+  const all = usDimOn.size === US_DIMS.length;
+  const btn = $('usDimBtn');
+  if (btn) {
+    btn.textContent = all ? '全部'
+      : US_DIMS.filter(d => usDimOn.has(d.key)).map(d => d.label).join('、');
+    btn.title = all ? '当前展示全部维度' : '当前展示：' + btn.textContent;
+  }
+  for (const d of US_DIMS) {
+    const el = document.querySelector('.sy-combo-item[data-dim="' + d.key + '"]');
+    if (el) el.classList.toggle('on', usDimOn.has(d.key));
+  }
+  const allEl = document.querySelector('.sy-combo-item[data-dim="__all"]');
+  if (allEl) allEl.classList.toggle('on', all);
+}
+
+function usDimInit() {
+  const btn = $('usDimBtn');
+  if (!btn || btn.dataset.syMulti === '1') return;
+  btn.dataset.syMulti = '1';
+
+  const menu = document.createElement('div');
+  menu.className = 'sy-combo-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.setAttribute('aria-multiselectable', 'true');
+  for (const r of [{ key: '__all', label: '全部' }].concat(US_DIMS)) {
+    const el = document.createElement('div');
+    el.className = 'sy-combo-item';
+    el.dataset.dim = r.key;
+    el.setAttribute('role', 'option');
+    el.textContent = r.label;
+    el.onclick = () => {
+      if (r.key === '__all') {
+        for (const d of US_DIMS) usDimOn.add(d.key);      // 全选
+      } else if (usDimOn.has(r.key)) {
+        if (usDimOn.size <= 1) return;                    // 至少留一项
+        usDimOn.delete(r.key);
+      } else {
+        usDimOn.add(r.key);
+      }
+      usDimSync();
+    };
+    menu.appendChild(el);
+  }
+  document.body.appendChild(menu);
+
+  let open = false;
+  const close = () => {
+    if (!open) return;
+    open = false; menu.classList.remove('on'); btn.setAttribute('aria-expanded', 'false');
+    const i = SY_COMBO_CLOSERS.indexOf(close);
+    if (i >= 0) SY_COMBO_CLOSERS.splice(i, 1);
+  };
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    menu.style.minWidth = Math.round(r.width) + 'px';
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    let left = r.left;
+    if (left + w > innerWidth - 8) left = Math.max(8, innerWidth - 8 - w);
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) {
+      const up = r.top - 6 - h;
+      top = up >= 8 ? up : Math.max(8, innerHeight - 8 - h);
+    }
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+  };
+  btn.onclick = ev => {
+    ev.preventDefault();
+    if (open) { close(); return; }
+    syComboCloseAll(close);
+    open = true; menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true');
+    SY_COMBO_CLOSERS.push(close);
+    requestAnimationFrame(() => { if (open) place(); });
+  };
+  usDimSync();
+}
+usDimInit();
 document.addEventListener('keydown', ev => { if (ev.key === 'Escape') syComboCloseAll(); });
 addEventListener('scroll', ev => {
   const t = ev.target;
