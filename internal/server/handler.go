@@ -62,6 +62,10 @@ type Config struct {
 	// 在 recordAttempt 这一唯一汇聚点调用，因此流式/非流式、成功/失败都会计入，
 	// 且与 pool 的每账号累计器同源，两条口径不会漂移。
 	Usage *usage.Recorder
+
+	// KeyQuota 子密钥时间窗配额计数器（可选；nil = 不限额）。
+	// 与 pool/usage 同目录落盘（keys_quota.json），跨重启保留窗口内计数。
+	KeyQuota *keys.Quota
 }
 
 // loadLive 返回当前运行期快照；Live 为 nil 时用静态字段合成。
@@ -502,6 +506,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 调用方身份（主密钥 / 子密钥）：子密钥可绑定账号白名单，选号与粘性都限定在
 	// 白名单内（分流管理）。withAuth 已注入；缺省主身份（不限定账号）。
 	id := keys.FromContext(r.Context())
+	// 子密钥分流约束（模型 / 域 / 时段 / 有效期 / 请求配额）：任一不通过就地 403，
+	// 不进入选号与上游调用。账号白名单不在这里判（选号侧 AllowSet 兜底，避免双口径）。
+	if reason := h.keyAccessDenied(id, realm, bareModel); reason != "" {
+		log.Printf("chat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
+		writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+		return
+	}
 	allow := id.AllowSet()
 
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。

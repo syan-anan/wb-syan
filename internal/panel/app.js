@@ -6,9 +6,20 @@ let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
 let logPin = true, loginState = null, loginTimer = null;
 let keysCache = null, keyEditing = null;
+// 账号池排序维度（持久化，刷新后保持）：'added' 按添加顺序（默认）/ 'realm' 国内·国际。
+let accSort = localStorage.getItem('wb-syan.accsort') === 'realm' ? 'realm' : 'added';
 let refTimer = null;
 
 const $ = id => document.getElementById(id);
+
+/* 顶栏实测高度写进 --topbar-h：日志视图用 calc(100vh - var(--topbar-h)) 撑满剩余
+   高度，窗口缩放 / 顶栏换行时自动跟上（写死像素值会在窄窗口露白或溢出）。 */
+function syncTopbarHeight() {
+  const tb = document.querySelector('.topbar');
+  if (tb) document.documentElement.style.setProperty('--topbar-h', (tb.offsetHeight || 67) + 'px');
+}
+syncTopbarHeight();
+addEventListener('resize', syncTopbarHeight);
 
 /* ── 主题 ─────────────────────────────────────────────────────────── */
 /* 两态翻转（浅/深），首次访问跟随系统偏好；点击总是切换可见外观，符合直觉。 */
@@ -145,8 +156,25 @@ document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDef
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
+/* 排序：默认「按添加顺序」（added_at 升序；后端已按此序返回，前端再排一次让切换即时
+   生效、不额外请求）；「国内 / 国际」把 cn 排在前面，组内仍按添加顺序。 */
+function sortAccounts(list) {
+  const arr = (list || []).slice();
+  const rank = r => (r === 'global' ? 1 : 0);
+  arr.sort((a, b) => {
+    if (accSort === 'realm') {
+      const d = rank(a.realm) - rank(b.realm);
+      if (d) return d;
+    }
+    const d2 = (a.added_at || 0) - (b.added_at || 0);
+    if (d2) return d2;
+    return String(a.uid) < String(b.uid) ? -1 : 1;
+  });
+  return arr;
+}
 function renderAccounts(list) {
   const tb = $('accBody');
+  list = sortAccounts(list);
   if (!list.length) {
     tb.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
     return;
@@ -236,6 +264,13 @@ async function loadOverview(quiet) {
     renderAccounts(d.accounts || []);
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
+
+$('accSort').value = accSort;
+$('accSort').onchange = () => {
+  accSort = $('accSort').value === 'realm' ? 'realm' : 'added';
+  localStorage.setItem('wb-syan.accsort', accSort);
+  if (overviewData && overviewData.accounts) renderAccounts(overviewData.accounts);
+};
 
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
@@ -1849,59 +1884,134 @@ async function loadPackages() {
 if ($('btnPk')) $('btnPk').onclick = loadPackages;
 
 /* ── 密钥管理（分流） ─────────────────────────────────────────────── */
-/* 每个子密钥可绑定账号白名单：用该密钥的 /v1/* 请求只在绑定账号内选号。密钥明文
-   仅创建时返回一次，列表只显示掩码。子密钥不能进入本面板（面板凭据只认密码/主密钥）。 */
+/* 每条子密钥可绑定：账号白名单 / 模型白名单 / 域白名单 / 每日生效时段 / 有效期 /
+   每时·每日请求配额。用该密钥的 /v1/* 请求先在服务端按这些约束判定，再在绑定账号内
+   选号。密钥明文仅创建时返回一次，列表只显示掩码；子密钥不能进入本面板。 */
+let kfAcctSel = new Set();   // 绑定账号的勾选态（唯一事实来源，搜索/筛选重渲染不丢）
+let kfAcctQuery = '';        // 账号搜索关键词
+let kfAcctRealm = '';        // 账号域筛选：'' | 'cn' | 'global'
+
 function keyAcctName(uid) {
   const d = keysCache || { accounts: [] };
   const a = (d.accounts || []).find(x => x.uid === uid);
   return a && a.nickname ? a.nickname : uid.slice(0, 8);
 }
+function kfAcctVisible(a) {
+  const name = a.nickname || a.uid.slice(0, 8);
+  if (kfAcctRealm && (a.realm || 'cn') !== kfAcctRealm) return false;
+  const q = kfAcctQuery.trim().toLowerCase();
+  if (!q) return true;
+  return String(name).toLowerCase().includes(q) || String(a.uid).toLowerCase().includes(q);
+}
+function updateAcctCnt() {
+  const total = ((keysCache || {}).accounts || []).length;
+  const el = $('kfAcctCnt');
+  if (el) el.textContent = '已选 ' + kfAcctSel.size + ' / 共 ' + total;
+}
 function renderAcctPicker() {
   const d = keysCache || { accounts: [] };
   const box = $('kfAccts');
-  const cur = new Set((keyEditing && keyEditing.accounts) || []);
+  if (!box) return;
   const list = d.accounts || [];
   if (!list.length) {
     box.innerHTML = '<span class="empty-tip">账号池为空，请先在「账号池」添加账号</span>';
+    updateAcctCnt();
     return;
   }
-  box.innerHTML = list.map(a =>
-    '<label><input type="checkbox" value="' + esc(a.uid) + '"' + (cur.has(a.uid) ? ' checked' : '') + '>' +
-    '<span>' + esc(a.nickname || a.uid.slice(0, 8)) + (a.disabled ? '（已停用）' : '') + '</span></label>'
-  ).join('');
+  box.innerHTML = list.map(a => {
+    const name = a.nickname || a.uid.slice(0, 8);
+    const tail = (a.realm === 'global' ? '（国际）' : '') + (a.disabled ? '（已停用）' : '');
+    return '<label class="' + (kfAcctVisible(a) ? '' : 'hide') + '">' +
+      '<input type="checkbox" value="' + esc(a.uid) + '"' + (kfAcctSel.has(a.uid) ? ' checked' : '') + '>' +
+      '<span title="' + esc(a.uid) + '">' + esc(name) + tail + '</span></label>';
+  }).join('');
+  box.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) kfAcctSel.add(cb.value); else kfAcctSel.delete(cb.value);
+      updateAcctCnt();
+    };
+  });
+  updateAcctCnt();
+}
+function collectAccts() { return Array.from(kfAcctSel); }
+
+// 时间戳 → 卡片上展示的本地时间文本。
+function fmtUnixTime(unix) {
+  const d = new Date(unix * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+// 时间戳 → <input type="datetime-local"> 需要的本地时间串。
+function toLocalInput(unix) {
+  const d = new Date(unix * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+// 一条密钥的全部约束摘要（卡片第二行的分段文本）。
+function keyLimitTags(k) {
+  const tags = [];
+  const n = (k.accounts || []).length;
+  tags.push(n ? ('账号 ' + n + ' 个') : '账号不限');
+  if ((k.models || []).length) tags.push('模型 ' + k.models.join('、'));
+  if ((k.realms || []).length) tags.push('域 ' + k.realms.map(r => r === 'global' ? '国际' : '国内').join('/'));
+  if (k.time_start || k.time_end) tags.push('时段 ' + (k.time_start || '00:00') + '–' + (k.time_end || '24:00'));
+  return tags;
+}
+// 配额用量文本（仅配了上限才展示）。
+function quotaText(k) {
+  const parts = [];
+  if (k.daily_limit > 0) parts.push('今日 ' + (k.used_today || 0) + '/' + k.daily_limit);
+  if (k.hourly_limit > 0) parts.push('本小时 ' + (k.used_hour || 0) + '/' + k.hourly_limit);
+  return parts.join(' · ');
 }
 function renderKeys() {
   const d = keysCache || { keys: [], accounts: [] };
   const list = d.keys || [];
-  const tb = $('keyBody');
+  const box = $('keyList');
+  if (!box) return;
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="big">还没有子密钥</div>在下方「新建密钥」创建一个，并可绑定指定账号</div></td></tr>';
+    box.innerHTML = '<div class="keyempty"><div class="big">还没有子密钥</div>' +
+      '在下方「新建密钥」创建一个，并按需绑定账号 / 模型 / 域 / 时段 / 配额</div>';
   } else {
-    tb.innerHTML = list.map(k => {
-      const accts = (k.accounts && k.accounts.length)
-        ? k.accounts.map(u => '<span class="tag mute" title="' + esc(u) + '">' + esc(keyAcctName(u)) + '</span>').join(' ')
-        : '<span class="tag mute">全部账号</span>';
-      const st = k.disabled ? '<span class="tag bad">已停用</span>' : '<span class="tag ok">启用中</span>';
-      const sub = k.note ? '<div class="note" style="color:var(--ink-3)">' + esc(k.note) + '</div>' : '';
-      return '<tr class="' + (k.disabled ? 'off' : '') + '">' +
-        '<td>' + esc(k.name || '—') + sub + '</td>' +
-        '<td><span style="font-family:var(--mono);font-size:12.5px">' + esc(k.key_masked) + '</span></td>' +
-        '<td>' + accts + '</td>' +
-        '<td>' + st + '</td>' +
-        '<td class="c-acts">' +
-          '<button class="xs" data-kcopy="' + esc(k.id) + '">复制</button>' +
-          '<button class="xs" data-kedit="' + esc(k.id) + '">编辑</button>' +
-          '<button class="xs" data-ktog="' + esc(k.id) + '">' + (k.disabled ? '启用' : '停用') + '</button>' +
-          '<button class="xs danger" data-kdel="' + esc(k.id) + '">删除</button>' +
-        '</td></tr>';
+    const now = d.now || Math.floor(Date.now() / 1000);
+    box.innerHTML = list.map(k => {
+      const expired = k.expires_at > 0 && now >= k.expires_at;
+      const off = k.disabled || expired;
+      const st = k.disabled ? '<span class="tag bad">已停用</span>'
+        : expired ? '<span class="tag warn">已过期</span>'
+        : '<span class="tag ok">启用中</span>';
+      const meta = keyLimitTags(k).map(t => '<span>' + esc(t) + '</span>').join('');
+      const q = quotaText(k);
+      const over = (k.daily_limit > 0 && (k.used_today || 0) >= k.daily_limit) ||
+                   (k.hourly_limit > 0 && (k.used_hour || 0) >= k.hourly_limit);
+      const usage = q ? '<span class="kc-usage' + (over ? ' over' : '') + '" title="配额窗口内已放行的请求数">' + esc(q) + '</span>' : '';
+      const expTag = k.expires_at > 0 ? '<span>有效至 ' + esc(fmtUnixTime(k.expires_at)) + '</span>' : '';
+      const note = k.note ? '<div class="kc-note">' + esc(k.note) + '</div>' : '';
+      return '<div class="keycard' + (off ? ' off' : '') + '">' +
+        '<div class="kc-top">' +
+          '<span class="kc-dot" aria-hidden="true"></span>' +
+          '<span class="kc-name">' + esc(k.name || '—') + '</span>' +
+          '<span class="kc-key" title="完整密钥请点「复制」">' + esc(k.key_masked) + '</span>' +
+          '<span class="kc-grow"></span>' + st +
+          '<span class="kc-acts">' +
+            '<button class="xs" data-kcopy="' + esc(k.id) + '">复制</button>' +
+            '<button class="xs" data-kedit="' + esc(k.id) + '">编辑</button>' +
+            '<button class="xs" data-ktog="' + esc(k.id) + '">' + (k.disabled ? '启用' : '停用') + '</button>' +
+            (q ? '<button class="xs" data-kreset="' + esc(k.id) + '" title="清零该密钥的配额计数（人工放行）">重置计数</button>' : '') +
+            '<button class="xs danger" data-kdel="' + esc(k.id) + '">删除</button>' +
+          '</span>' +
+        '</div>' +
+        '<div class="kc-meta">' + meta + expTag + usage + '</div>' + note +
+      '</div>';
     }).join('');
   }
   $('keyNote').textContent = list.length ? (list.length + ' 个密钥') : '';
   renderAcctPicker();
-  tb.querySelectorAll('[data-kcopy]').forEach(b => b.onclick = () => copyKey(b.dataset.kcopy));
-  tb.querySelectorAll('[data-kedit]').forEach(b => b.onclick = () => editKey(b.dataset.kedit));
-  tb.querySelectorAll('[data-ktog]').forEach(b => b.onclick = () => toggleKey(b.dataset.ktog));
-  tb.querySelectorAll('[data-kdel]').forEach(b => b.onclick = () => removeKey(b.dataset.kdel));
+  box.querySelectorAll('[data-kcopy]').forEach(b => b.onclick = () => copyKey(b.dataset.kcopy));
+  box.querySelectorAll('[data-kedit]').forEach(b => b.onclick = () => editKey(b.dataset.kedit));
+  box.querySelectorAll('[data-ktog]').forEach(b => b.onclick = () => toggleKey(b.dataset.ktog));
+  box.querySelectorAll('[data-kreset]').forEach(b => b.onclick = () => resetKeyQuota(b.dataset.kreset));
+  box.querySelectorAll('[data-kdel]').forEach(b => b.onclick = () => removeKey(b.dataset.kdel));
 }
 async function loadKeys() {
   try {
@@ -1911,7 +2021,14 @@ async function loadKeys() {
 }
 function keyFormReset() {
   keyEditing = null;
+  kfAcctSel = new Set();
+  kfAcctQuery = ''; kfAcctRealm = '';
   $('kfId').value = ''; $('kfName').value = ''; $('kfKey').value = ''; $('kfNote').value = '';
+  $('kfModels').value = '';
+  $('kfRealmCn').checked = false; $('kfRealmGlobal').checked = false;
+  $('kfTimeStart').value = ''; $('kfTimeEnd').value = ''; $('kfExpires').value = '';
+  $('kfDaily').value = ''; $('kfHourly').value = '';
+  $('kfAcctSearch').value = ''; $('kfAcctRealm').value = '';
   $('keyFormTitle').textContent = '新建密钥';
   $('kfCancel').hidden = true;
   renderAcctPicker();
@@ -1921,17 +2038,49 @@ function editKey(id) {
   const k = (d.keys || []).find(x => x.id === id);
   if (!k) return;
   keyEditing = k;
+  kfAcctSel = new Set(k.accounts || []);
+  kfAcctQuery = ''; kfAcctRealm = '';
   $('kfId').value = k.id;
   $('kfName').value = k.name || '';
   $('kfKey').value = '';
   $('kfNote').value = k.note || '';
+  $('kfModels').value = (k.models || []).join(', ');
+  $('kfRealmCn').checked = (k.realms || []).indexOf('cn') >= 0;
+  $('kfRealmGlobal').checked = (k.realms || []).indexOf('global') >= 0;
+  $('kfTimeStart').value = k.time_start || '';
+  $('kfTimeEnd').value = k.time_end || '';
+  $('kfExpires').value = k.expires_at > 0 ? toLocalInput(k.expires_at) : '';
+  $('kfDaily').value = k.daily_limit > 0 ? String(k.daily_limit) : '';
+  $('kfHourly').value = k.hourly_limit > 0 ? String(k.hourly_limit) : '';
+  $('kfAcctSearch').value = ''; $('kfAcctRealm').value = '';
   $('keyFormTitle').textContent = '编辑密钥：' + (k.name || k.id);
   $('kfCancel').hidden = false;
   renderAcctPicker();
   $('keyForm').scrollIntoView({ block: 'center' });
 }
-function collectAccts() {
-  return Array.from($('kfAccts').querySelectorAll('input[type=checkbox]:checked')).map(i => i.value);
+// 非负整数解析：空/非法/负数一律 0（0 = 不限）。
+function intOr0(v) {
+  const n = parseInt(v, 10);
+  return isNaN(n) || n < 0 ? 0 : n;
+}
+// 表单 → 提交体（编辑与新建共用；key 由调用方按需补）。
+function collectKeyBody() {
+  const realms = [];
+  if ($('kfRealmCn').checked) realms.push('cn');
+  if ($('kfRealmGlobal').checked) realms.push('global');
+  const ex = $('kfExpires').value.trim();
+  return {
+    name: $('kfName').value.trim(),
+    note: $('kfNote').value.trim(),
+    accounts: collectAccts(),
+    models: $('kfModels').value.split(/[,，\n]/).map(s => s.trim()).filter(Boolean),
+    realms: realms,
+    time_start: $('kfTimeStart').value.trim(),
+    time_end: $('kfTimeEnd').value.trim(),
+    expires_at: ex ? Math.floor(new Date(ex).getTime() / 1000) : 0,
+    daily_limit: intOr0($('kfDaily').value),
+    hourly_limit: intOr0($('kfHourly').value),
+  };
 }
 async function toggleKey(id) {
   const d = keysCache || { keys: [] };
@@ -1953,6 +2102,16 @@ async function removeKey(id) {
     if (keyEditing && keyEditing.id === id) keyFormReset();
     loadKeys();
   } catch (e) { toast('删除失败：' + e.message, 'err'); }
+}
+async function resetKeyQuota(id) {
+  const d = keysCache || { keys: [] };
+  const k = (d.keys || []).find(x => x.id === id);
+  if (!confirm('把密钥「' + ((k && k.name) || id) + '」的今日/本小时用量清零？')) return;
+  try {
+    await api('keys/' + encodeURIComponent(id) + '/reset_quota', { method: 'POST' });
+    toast('计数已清零', 'ok');
+    loadKeys();
+  } catch (e) { toast('重置失败：' + e.message, 'err'); }
 }
 /* 复制到剪贴板：优先 Clipboard API；非安全上下文（http://<ip>:端口 直连）里
    navigator.clipboard 不存在，回落到 textarea + execCommand('copy')。 */
@@ -1978,7 +2137,7 @@ async function copyText(text) {
     return ok;
   } catch (e) { return false; }
 }
-// 列表行「复制」：取回完整密钥再复制；兜底失败时弹出明文让用户手动复制。
+// 卡片「复制」：取回完整密钥再复制；兜底失败时弹出明文让用户手动复制。
 async function copyKey(id) {
   const d = keysCache || { keys: [] };
   const k = (d.keys || []).find(x => x.id === id);
@@ -1999,23 +2158,34 @@ function showCreatedKey(key, accounts) {
 $('btnKeyReload').onclick = loadKeys;
 $('kfReset').onclick = keyFormReset;
 $('kfCancel').onclick = keyFormReset;
+$('kfAcctSearch').oninput = () => { kfAcctQuery = $('kfAcctSearch').value; renderAcctPicker(); };
+$('kfAcctRealm').onchange = () => { kfAcctRealm = $('kfAcctRealm').value; renderAcctPicker(); };
+$('kfAcctAll').onclick = () => {
+  ((keysCache || {}).accounts || []).filter(kfAcctVisible).forEach(a => kfAcctSel.add(a.uid));
+  renderAcctPicker();
+};
+$('kfAcctNone').onclick = () => {
+  ((keysCache || {}).accounts || []).filter(kfAcctVisible).forEach(a => kfAcctSel.delete(a.uid));
+  renderAcctPicker();
+};
 $('keyForm').onsubmit = async ev => {
   ev.preventDefault();
-  const name = $('kfName').value.trim();
-  if (!name) { toast('请填写名称', 'err'); return; }
-  const accounts = collectAccts();
+  const body = collectKeyBody();
+  if (!body.name) { toast('请填写名称', 'err'); return; }
+  if ($('kfExpires').value.trim() && !(body.expires_at > 0)) { toast('有效期时间格式不正确', 'err'); return; }
   const id = $('kfId').value;
   const btn = $('kfSave');
   btn.disabled = true; btn.textContent = '保存中…';
   try {
     if (id) {
-      await api('keys/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify({ name: name, note: $('kfNote').value.trim(), accounts: accounts }) });
+      await api('keys/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify(body) });
       toast('已保存', 'ok');
       keyFormReset();
       loadKeys();
     } else {
-      const r = await api('keys', { method: 'POST', body: JSON.stringify({ name: name, key: $('kfKey').value.trim(), note: $('kfNote').value.trim(), accounts: accounts }) });
-      showCreatedKey(r.key, accounts);
+      body.key = $('kfKey').value.trim();
+      const r = await api('keys', { method: 'POST', body: JSON.stringify(body) });
+      showCreatedKey(r.key, body.accounts);
       keyFormReset();
       loadKeys();
     }

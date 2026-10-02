@@ -457,19 +457,46 @@ func (p *Pool) ServableForRealm(realm string) bool {
 	return false
 }
 
-// List 返回所有账号状态（按 UID 排序，稳定输出）。
-func (p *Pool) List() []Status {
+// 面板账号池的排序维度。
+const (
+	SortAdded = "added" // 按添加时间升序（默认）
+	SortRealm = "realm" // 先按域（cn → global），域内按添加时间升序
+)
+
+// List 返回所有账号状态，默认按「添加时间升序」排序（面板账号池默认顺序）。
+// 历史账号 added_at 缺失（0）时排在最前，同刻用 uid 稳定兜底。
+func (p *Pool) List() []Status { return p.ListSorted(SortAdded) }
+
+// ListSorted 按指定维度排序返回账号状态（稳定输出）：
+//   - SortAdded：添加时间升序（默认；老账号排前，新加的在后面）；
+//   - SortRealm：域分组（cn 在前、global 在后），组内仍按添加时间升序。
+//
+// 其它取值退化为 SortAdded（前端传错不炸，零回归）。
+func (p *Pool) ListSorted(mode string) []Status {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	uids := make([]string, 0, len(p.byUID))
-	for uid := range p.byUID {
-		uids = append(uids, uid)
+	out := make([]Status, 0, len(p.byUID))
+	for uid, e := range p.byUID {
+		out = append(out, p.statusOf(uid, e))
 	}
-	sort.Strings(uids)
-	out := make([]Status, 0, len(uids))
-	for _, uid := range uids {
-		out = append(out, p.statusOf(uid, p.byUID[uid]))
+	realmRank := func(r string) int {
+		if r == "global" {
+			return 1
+		}
+		return 0
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if mode == SortRealm {
+			if ra, rb := realmRank(a.Realm), realmRank(b.Realm); ra != rb {
+				return ra < rb
+			}
+		}
+		if a.AddedAt != b.AddedAt {
+			return a.AddedAt < b.AddedAt
+		}
+		return a.UID < b.UID
+	})
 	return out
 }
 func (p *Pool) statusOf(uid string, e *entry) Status {
@@ -481,6 +508,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，
 		// 普通软冷却（无模型级表）/硬冷却不产生台账（零回归）。
 		RateLimitedModels:        p.rateLimitedModelsLocked(e, now),
+		AddedAt:                  e.addedAt,
 		Realm:                    e.a.Realm(),
 		Nickname:                 e.a.Nickname,
 		Credits:                  e.credits,

@@ -129,6 +129,17 @@ func (p *Pool) load() {
 	p.applyAccountsLocked(sf.Accounts)
 }
 
+// addedAtFor 推导账号的加入时间（Unix 秒）：auths 文件存在取 mtime（历史账号迁移的
+// 唯一可用来源），无文件（内存构造/测试）或 stat 失败回落当前时刻。
+func addedAtFor(a *auth.Auth) int64 {
+	if a != nil && a.FilePath != "" {
+		if fi, err := os.Stat(a.FilePath); err == nil {
+			return fi.ModTime().Unix()
+		}
+	}
+	return time.Now().Unix()
+}
+
 // applyAccountsLocked 用持久化账号状态覆盖/插入 byUID（placeholder 凭证，Add 时换全）。
 // 本地 load() 与 Redis 快照恢复共用；调用方必须已持有 p.mu。
 func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
@@ -142,6 +153,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 		}
 		e := &entry{
 			a:                        &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
+			addedAt:                  s.AddedAt,
 			credits:                  s.Credits,
 			creditsTotal:             s.CreditsTotal,
 			creditsExpiring:          s.CreditsExpiring,
@@ -282,6 +294,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 	sf := stateFile{Accounts: map[string]stateAccount{}}
 	for uid, e := range p.byUID {
 		s := stateAccount{
+			AddedAt:                  e.addedAt,
 			Credits:                  e.credits,
 			CreditsTotal:             e.creditsTotal,
 			Disabled:                 e.disabled,

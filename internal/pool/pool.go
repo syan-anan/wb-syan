@@ -338,12 +338,21 @@ func (p *Pool) Remove(uid string) *auth.Auth {
 
 // upsertLocked 更新或插入单个账号；已存在则只换凭证、保留 credits/cooling 状态。
 // 调用方必须已持有 p.mu；Add 与 SyncToDir 共用此 upsert 逻辑。
+//
+// addedAt（面板「按添加顺序」排序的依据）：新账号直接取 auths 文件 mtime（OAuth 落盘
+// 刚写完 ≈ 当前时刻；纯内存构造回落到 now）；已存在但 addedAt==0 的历史账号（state.json
+// 里还没有 added_at 键）用文件 mtime 回填一次并置脏——下一次落盘就固定下来，此后
+// token 刷新重写 auth 文件也不会让排序漂移。
 func (p *Pool) upsertLocked(a *auth.Auth) {
 	if e, ok := p.byUID[a.UID]; ok {
 		e.a = a // 保留 credits/cooling 状态
+		if e.addedAt == 0 {
+			e.addedAt = addedAtFor(a)
+			p.dirty.Store(true)
+		}
 		return
 	}
-	p.byUID[a.UID] = &entry{a: a}
+	p.byUID[a.UID] = &entry{a: a, addedAt: addedAtFor(a)}
 }
 
 // Pick 返回 healthy 中积分最高的账号；无可用返回 nil。

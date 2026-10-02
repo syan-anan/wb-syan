@@ -61,6 +61,10 @@ type Config struct {
 	// nil 时密钥管理接口返回 501。由 main 注入（与 SaveConfig 同源的落盘路径）。
 	SaveKeys func(entries []keys.Entry) error
 
+	// KeyQuota 子密钥配额计数器（可选；nil = 密钥管理页不展示用量、无「重置计数」）。
+	// 与 server.Config.KeyQuota 是同一个实例（进程内单例）。
+	KeyQuota *keys.Quota
+
 	// StickyCount 返回粘性会话绑定数；nil 时报告 0。
 	StickyCount func() int
 
@@ -196,6 +200,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/keys/{id}/remove", p.withAuth(p.removeKey))
 	// 复制用：返回完整明文（仅面板凭据）。
 	p.mux.HandleFunc("POST /panel/api/keys/{id}/reveal", p.withAuth(p.revealKey))
+	// 配额计数清零（撞限额后人工放行一次）。
+	p.mux.HandleFunc("POST /panel/api/keys/{id}/reset_quota", p.withAuth(p.resetKeyQuota))
 	p.mux.HandleFunc("GET /panel/api/accounts/refs", p.withAuth(p.accountRefs))
 }
 

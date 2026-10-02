@@ -84,6 +84,10 @@ type Status struct {
 	// Realm 账号域（cn/global，auth.Realm() 计算值；含 global.enabled 开关闸）。
 	// 供面板/状态接口按域分组展示。
 	Realm           string     `json:"realm,omitempty"`
+	// AddedAt 账号加入池的时间（Unix 秒）。面板账号池默认按它升序排列；历史账号由
+	// auths/*.json 的文件 mtime 一次性回填（见 upsertLocked），回填后固定写入
+	// state.json，不再随 token 刷新（重写 auth 文件）而漂移。
+	AddedAt         int64      `json:"added_at,omitempty"`
 	Disabled        bool       `json:"disabled"`
 	DisabledReason  string     `json:"disabled_reason,omitempty"` // 仅 disabled 账号：禁用原因（运维可见）
 	SuccessCount    int64      `json:"success_count,omitempty"`
@@ -164,6 +168,7 @@ type modelCostEntry struct {
 }
 type entry struct {
 	a            *auth.Auth
+	addedAt      int64 // 账号加入时间（Unix 秒）；0 = 未知（等待 auths 文件 mtime 回填）
 	credits      int64
 	creditsTotal int64 // 积分总额度（UserResource 聚合；0 = 未知）
 	// creditsExpiring 配置窗口内即将过期的可用积分子集，是 credits 的一部分。
@@ -386,6 +391,9 @@ func (e *entry) fallbackKind(now time.Time) string {
 
 // stateAccount 单个账号的持久化状态（JSON tag 全小写下划线，向后兼容：缺字段零值）。
 type stateAccount struct {
+	// AddedAt 账号加入时间（Unix 秒）。持久化以固定「按添加顺序」排序：不落盘的话
+	// 每次重启都会用 auths 文件 mtime 重新回填，而 mtime 会被 token 刷新重写。
+	AddedAt      int64     `json:"added_at,omitempty"`
 	Credits      int64     `json:"credits"`
 	CreditsTotal int64     `json:"credits_total,omitempty"`
 	Disabled     bool      `json:"disabled"`

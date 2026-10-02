@@ -234,6 +234,14 @@ func main() {
 	defer rec.Stop()
 	log.Printf("[usage] 逐请求用量记录已启用: %s (%s)", usagePath, rec.Describe())
 
+	// 子密钥配额计数器：每时/每日请求数，独立文件落盘（与 state 文件同目录），
+	// 后台 15s 一把 + 退出前 Flush。面板与 /v1/* 共用同一个实例。
+	keyQuotaPath := stateSibling(cfg.StateFile, "keys_quota.json")
+	keyQuota := keys.NewQuota(keyQuotaPath)
+	keyQuota.Start()
+	defer keyQuota.Stop()
+	log.Printf("[keys] 子密钥配额计数已启用: %s", keyQuotaPath)
+
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
@@ -259,6 +267,8 @@ func main() {
 		SaveKeys: func(entries []keys.Entry) error {
 			return saveKeys(entries, *cfgPath, live)
 		},
+		// 密钥管理页的配额用量展示与「重置计数」。
+		KeyQuota: keyQuota,
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
@@ -281,6 +291,8 @@ func main() {
 		PromptText:   cfg.PromptText,
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
+		// 子密钥配额闸门（模型/域/时段/有效期在 keyguard.go 内判定）。
+		KeyQuota: keyQuota,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -455,18 +467,38 @@ func saveKeys(entries []keys.Entry, path string, live *livecfg.Holder) error {
 	// 显式写数组（空列表也写 []，语义清晰：没有子密钥）。
 	arr := make([]any, 0, len(norm))
 	for _, e := range norm {
-		accts := e.Accounts
-		if accts == nil {
-			accts = []string{}
-		}
-		arr = append(arr, map[string]any{
+		m := map[string]any{
 			"id":       e.ID,
 			"name":     e.Name,
 			"key":      e.Key,
 			"note":     e.Note,
-			"accounts": accts,
+			"accounts": nonNilStrings(e.Accounts),
 			"disabled": e.Disabled,
-		})
+		}
+		// 约束字段只在非零值时写出：保持老 config.json 干净（零值 = 不限，语义等价），
+		// 面板读回时缺字段即零值。
+		if len(e.Models) > 0 {
+			m["models"] = nonNilStrings(e.Models)
+		}
+		if len(e.Realms) > 0 {
+			m["realms"] = nonNilStrings(e.Realms)
+		}
+		if e.TimeStart != "" {
+			m["time_start"] = e.TimeStart
+		}
+		if e.TimeEnd != "" {
+			m["time_end"] = e.TimeEnd
+		}
+		if e.ExpiresAt > 0 {
+			m["expires_at"] = e.ExpiresAt
+		}
+		if e.DailyLimit > 0 {
+			m["daily_limit"] = e.DailyLimit
+		}
+		if e.HourlyLimit > 0 {
+			m["hourly_limit"] = e.HourlyLimit
+		}
+		arr = append(arr, m)
 	}
 	cur["api_keys"] = arr
 
@@ -483,6 +515,14 @@ func saveKeys(entries []keys.Entry, path string, live *livecfg.Holder) error {
 	snap.Keys = keys.New(snap.APIKey, norm)
 	live.Store(snap)
 	return nil
+}
+
+// nonNilStrings 把 nil 切片归一为空切片（JSON 里写 [] 而不是 null）。
+func nonNilStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }
 
 // writeConfigAtomic 原子替换配置文件：先写同目录 tmp 再 rename；单文件 bind mount

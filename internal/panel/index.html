@@ -274,10 +274,19 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .empty { padding: 40px 20px; text-align: center; color: var(--ink-3); }
 .empty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
 
-/* ── 日志（终端质感）────────────────────────────────────────────── */
+/* ── 日志（终端质感；撑满剩余高度，页面本身不出现滚动条）────────── */
+/* 高度用 --topbar-h（app.js 启动/缩放时按 .topbar 实测写入）而不是魔法数字：
+   顶栏高度随按钮字号/换行变化，写死会在窄窗口下露白或溢出。 */
+#view-logs {
+  display: flex; flex-direction: column;
+  height: calc(100vh - var(--topbar-h, 67px));
+  padding-bottom: 22px;
+}
+#view-logs .box { flex: 1; min-height: 0; margin-bottom: 0; display: flex; flex-direction: column; }
+#view-logs .box > header { flex: none; }
 #logBox {
-  max-height: 420px; overflow: auto; margin: 0; padding: 15px 17px;
-  font: 12px/1.75 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
+  flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 15px 17px;
+  font: 16px/1.75 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
 }
 #logBox .ln { display: block; }
 #logBox .ln.e { color: var(--bad); }
@@ -442,6 +451,29 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
   .pk-card .expirybar i { display: block; height: 100%; min-width: 2px; }
 
 .acctpick { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; max-height: 190px; overflow: auto; }
+.acctpick-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.acctpick-tools input { flex: 1; min-width: 160px; }
+.acctpick-tools .cnt { font-size: 12px; color: var(--ink-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.acctpick label.hide { display: none; }
+label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+
+/* ── 密钥管理（卡片式，一屏看清每条 key 的全部分流约束）────────── */
+.keylist { display: flex; flex-direction: column; gap: 12px; padding: 15px 17px; }
+.keycard { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); padding: 13px 15px; }
+.keycard.off { opacity: .6; }
+.keycard .kc-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.keycard .kc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.keycard.off .kc-dot { background: var(--ink-3); }
+.keycard .kc-name { font-weight: 600; font-size: 14px; }
+.keycard .kc-key { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+.keycard .kc-grow { flex: 1; }
+.keycard .kc-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+.keycard .kc-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 9px; font-size: 12.5px; color: var(--ink-2); }
+.keycard .kc-meta b { font-weight: 550; color: var(--ink-3); font-size: 11.5px; margin-right: 4px; }
+.keycard .kc-note { margin-top: 8px; font-size: 12px; color: var(--ink-3); }
+.keycard .kc-usage.over { color: var(--bad); }
+.keyempty { padding: 38px 20px; text-align: center; color: var(--ink-3); }
+.keyempty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
 .acctpick label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
 .acctpick .empty-tip { color: var(--ink-3); font-size: 12.5px; }
 </style>
@@ -513,6 +545,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <header>
           <h3>账号池</h3>
           <span class="grow"></span>
+          <label class="sel-note">排序
+            <select id="accSort" title="账号池排序方式">
+              <option value="added">按添加顺序</option>
+              <option value="realm">国内 / 国际</option>
+            </select>
+          </label>
           <span class="note" id="accNote"></span>
           <button class="xs" id="btnCheckinAll">全部签到</button>
           <button class="xs" id="btnTravelAll">旅行巡检</button>
@@ -687,14 +725,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <span class="note" id="keyNote"></span>
           <button class="xs" id="btnKeyReload">刷新</button>
         </header>
-        <div class="tbl-wrap">
-        <table class="acc">
-          <thead><tr>
-            <th>名称</th><th>密钥</th><th>绑定账号</th><th>状态</th><th class="c-acts"></th>
-          </tr></thead>
-          <tbody id="keyBody"></tbody>
-        </table>
-        </div>
+        <div class="keylist" id="keyList"></div>
       </div>
 
       <div class="box">
@@ -715,9 +746,51 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
             </div>
             <label class="fld"><span class="lb">备注（可选）</span>
               <input id="kfNote" placeholder="例如：只走备用账号" autocomplete="off"></label>
-            <div class="fld"><span class="lb">绑定账号（不勾选 = 走全部账号）</span>
+
+            <div class="hr"></div>
+            <div class="fld"><span class="lb">绑定账号（不勾选 = 不限账号）</span>
+              <div class="acctpick-tools">
+                <input id="kfAcctSearch" placeholder="搜索账号（昵称 / uid）" autocomplete="off">
+                <label class="sel-note">域
+                  <select id="kfAcctRealm">
+                    <option value="">全部</option>
+                    <option value="cn">国内</option>
+                    <option value="global">国际</option>
+                  </select></label>
+                <button type="button" class="xs" id="kfAcctAll">全选</button>
+                <button type="button" class="xs" id="kfAcctNone">清空</button>
+                <span class="cnt" id="kfAcctCnt"></span>
+              </div>
               <div class="acctpick" id="kfAccts"></div>
-              <span class="hint">勾选后，用这个密钥发起的请求只会落在勾选的账号上，不会走其它账号</span></div>
+              <span class="hint">勾选后，用这个密钥发起的请求只会落在勾选的账号上，不会走其它账号。</span></div>
+
+            <div class="hr"></div>
+            <label class="fld"><span class="lb">模型白名单（可选，逗号分隔）</span>
+              <input id="kfModels" placeholder="留空 = 不限；例如：glm-5.3, hy3-*" autocomplete="off">
+              <span class="hint">支持结尾 * 前缀通配（glm-* 匹配所有 glm 开头的模型），不区分大小写。</span></label>
+            <div class="fld"><span class="lb">域白名单（可选）</span>
+              <div class="inline">
+                <label class="chk"><input type="checkbox" id="kfRealmCn"> 国内（cn）</label>
+                <label class="chk"><input type="checkbox" id="kfRealmGlobal"> 国际（global）</label>
+                <span class="hint" style="margin:0">都不勾 = 不限域</span>
+              </div></div>
+
+            <div class="hr"></div>
+            <div class="grid3">
+              <label class="fld"><span class="lb">每日生效起点（可选）</span>
+                <input type="time" id="kfTimeStart"></label>
+              <label class="fld"><span class="lb">每日生效终点（可选）</span>
+                <input type="time" id="kfTimeEnd"></label>
+              <label class="fld"><span class="lb">有效期至（可选）</span>
+                <input type="datetime-local" id="kfExpires"></label>
+            </div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">每天最多请求数</span>
+                <input type="number" min="0" step="1" id="kfDaily" placeholder="0 = 不限"></label>
+              <label class="fld"><span class="lb">每小时最多请求数</span>
+                <input type="number" min="0" step="1" id="kfHourly" placeholder="0 = 不限"></label>
+            </div>
+            <span class="hint" style="display:block;margin:-6px 0 14px">时段跨零点（22:00 → 06:00）按跨天窗口判定；时间按服务器本地时区。</span>
             <div class="inline">
               <button type="submit" class="primary" id="kfSave">保存</button>
               <button type="button" id="kfCancel" hidden>取消编辑</button>
