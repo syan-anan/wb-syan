@@ -40,6 +40,11 @@ type chatStat struct {
 	ttfb   time.Duration
 	toks   int // <0 表示 usage 缺失 → 显示 "-"
 	status int
+	// credit 本次请求上游回报的实测扣费积分；hasCredit=false 表示没有成本观测
+	// （失败 / 上游未返回 credit）——流水行显示 "-"，与「观测到 0」（免费模型，
+	// 显示 0.0000）区分开，两者混同会让「没记账」被读成「没消耗」。
+	credit    float64
+	hasCredit bool
 
 	logged bool
 }
@@ -59,8 +64,13 @@ func (s *chatStat) done() {
 		return
 	}
 	s.logged = true
-	logChatRow(s.ttfb, time.Since(s.start), s.model, s.mode, s.uid, s.nick, s.status, s.toks)
+	logChatRow(s.ttfb, time.Since(s.start), s.model, s.mode, s.uid, s.nick, s.status, s.toks, s.credit, s.hasCredit)
 }
+
+// setCredit 记录本次请求的实测扣费积分，供流水行末尾的 cr= 列展示（4 位小数）。
+// 值来自上游 usage.credit（流式末帧 / 非流式聚合响应），与成本台账、
+// 用量桶里的积分口径同源。
+func (s *chatStat) setCredit(v float64, ok bool) { s.credit, s.hasCredit = v, ok }
 
 // chatStatsReader 在流式透传时抓取 SSE 末帧的 usage.completion_tokens 精确值，
 // 并记录首个 data 帧的 TTFB；原始字节原样返回给下游透传。
@@ -276,6 +286,8 @@ const (
 	chatTTFBWidth = 8
 	chatTokWidth  = 6
 	chatRateWidth = 11 // 形如 "183.6tok/s"
+	// chatCreditWidth 容纳 4 位小数积分："0.0001"(6) / "12.5000"(7) / "1234.5678"(9)。
+	chatCreditWidth = 9
 )
 
 // logChatRow 打印一行请求级表格日志（输出 chatLogOut，无 log 时间戳前缀）。
@@ -284,8 +296,9 @@ const (
 //   - model：模型名（含 realm 前缀），超 chatModelWidth 截断（模型名是 ASCII，字节截即列宽）；
 //   - uid/nick：完整 uid 与账号昵称，经 logfmt.Label 拼成 "昵称(uid8)" 展示——只有
 //     uid8 时人眼无法判断是哪个号，要辨认必须再查 auths/，排障多一跳；
-//   - toks<0 表示 usage 缺失，显示 "-"。
-func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int) {
+//   - toks<0 表示 usage 缺失，显示 "-"；
+//   - hasCredit=false 表示本次没有成本观测，cr 列显示 "-"（观测到 0 显示 0.0000）。
+func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int, credit float64, hasCredit bool) {
 	if !chatLogEnabled {
 		return
 	}
@@ -307,7 +320,13 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status
 	if ttfb > 0 {
 		ttfbMS = fmt.Sprintf("%dms", ttfb.Milliseconds())
 	}
-	fmt.Fprintf(chatLogOut, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | %s | total=%.1fs |\n",
+	// cr 列固定 4 位小数：上游 credit 本身是小数，缩写或取整都会让
+	// 「一次请求到底扣了多少」失去可比性。
+	crField := "-"
+	if hasCredit {
+		crField = fmt.Sprintf("%.4f", credit)
+	}
+	fmt.Fprintf(chatLogOut, "| #%03d | %s | %s | %s | %d | %s | TTFB=%s | tok=%s | %s | total=%.1fs | cr=%s |\n",
 		seq,
 		time.Now().Format("15:04:05"),
 		model,
@@ -318,5 +337,6 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status
 		logfmt.Pad(tokField, chatTokWidth),
 		logfmt.Pad(tokpsField, chatRateWidth),
 		total.Seconds(),
+		logfmt.Pad(crField, chatCreditWidth),
 	)
 }

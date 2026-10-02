@@ -910,6 +910,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 顺序反了就只能落个「有 token 没成本」的桶。
 			credit, hasCredit := stats.Credit()
 			recordAttempt(acct.UID, stats.Usage(), attemptStarted, credit, hasCredit)
+			st.setCredit(credit, hasCredit)
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
 			// 不写入零值——否则「没观测到 usage」被伪造成「测得 0 token」，
@@ -939,6 +940,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 成本先取再记账（同流式分支）：本次实测 credit 随用量桶一起落账。
 		credit, creditTotal, hasCredit := usageCreditTotal(resp)
 		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, credit, hasCredit)
+		st.setCredit(credit, hasCredit)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
 		st.toks = completionTokens(resp)

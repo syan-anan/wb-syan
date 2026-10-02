@@ -152,10 +152,10 @@ func TestUIDPrefix(t *testing.T) {
 func TestLogChatRowFormat(t *testing.T) {
 	withChatLog(t)
 	out := captureStdout(t, func() {
-		logChatRow(412*time.Millisecond, 27100*time.Millisecond, "deepseek-v4-flash", "stream", "00e26541abcdef", "示例号", http.StatusOK, 1234)
+		logChatRow(412*time.Millisecond, 27100*time.Millisecond, "deepseek-v4-flash", "stream", "00e26541abcdef", "示例号", http.StatusOK, 1234, 0.0123, true)
 	})
 	for _, want := range []string{
-		"| #", "deepseek-v4", "| stream |", "| 200 |", "示例号(00e26541)", "TTFB=412ms", "tok=1234", "tok/s   |", "total=",
+		"| #", "deepseek-v4", "| stream |", "| 200 |", "示例号(00e26541)", "TTFB=412ms", "tok=1234", "tok/s   |", "total=", "cr=0.0123",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("row missing %q:\n%s", want, out)
@@ -169,20 +169,42 @@ func TestLogChatRowFormat(t *testing.T) {
 func TestLogChatRowNoUsageShowsDash(t *testing.T) {
 	withChatLog(t)
 	out := captureStdout(t, func() {
-		logChatRow(0, time.Second, "glm-5.2", "sync", "s1", "", http.StatusServiceUnavailable, -1)
+		logChatRow(0, time.Second, "glm-5.2", "sync", "s1", "", http.StatusServiceUnavailable, -1, 0, false)
 	})
-	for _, want := range []string{"TTFB=-", "tok=-", "tok=-      |", "| 503 |"} {
+	for _, want := range []string{"TTFB=-", "tok=-", "tok=-      |", "| 503 |", "cr=-"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("row missing %q:\n%s", want, out)
 		}
 	}
 }
 
+// 积分列：固定 4 位小数；「没有观测」显示 "-"，「观测到 0」（免费模型）显示
+// 0.0000——两者必须长得不一样，否则运维分不清是没记账还是真没扣。
+func TestLogChatRowCreditColumn(t *testing.T) {
+	withChatLog(t)
+	out := captureStdout(t, func() {
+		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1, 0.0001, true)
+		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1, 12.5, true)
+		logChatRow(0, time.Second, "m", "sync", "u", "", 503, -1, 0, false)
+	})
+	for _, want := range []string{"cr=0.0001", "cr=12.5000", "cr=-"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("credit column missing %q:\n%s", want, out)
+		}
+	}
+	free := captureStdout(t, func() {
+		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1, 0, true)
+	})
+	if !strings.Contains(free, "cr=0.0000") {
+		t.Errorf("免费模型应显示 cr=0.0000 而不是 -：\n%s", free)
+	}
+}
+
 func TestLogChatRowSeqIncrements(t *testing.T) {
 	withChatLog(t)
 	out := captureStdout(t, func() {
-		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1)
-		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1)
+		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1, 0, false)
+		logChatRow(0, time.Second, "m", "sync", "u", "", 200, 1, 0, false)
 	})
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 2 {
