@@ -722,3 +722,104 @@ select:disabled { opacity: .5; }
   background-repeat: no-repeat;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 8px 18px rgba(106,140,255,.30);
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+   第三轮修订（逐条反馈）：账号池分隔线 / 统计卡间距 / 自绘下拉 / 日志高度
+   —— 仍然只覆盖视觉与交互壳，不改 DOM 结构、不改接口、不改取数逻辑。
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ① 账号池行分隔线错位：.acts 被设成 display:flex 后不再是 table-cell，
+   浏览器为它生成一层匿名单元格，border-bottom 就画在「内容盒」底部而不是
+   「整行」底部 —— 于是操作列那一段比左边高出 6px，断点正好在列边界。
+   恢复 table-cell，按钮改回行内右对齐，间距用 margin 补。 */
+.acc td.acts { display: table-cell; text-align: right; white-space: nowrap; }
+.acc td.acts > button { vertical-align: middle; }
+.acc td.acts > button + button { margin-left: 5px; }
+
+/* ② 用量总览的统计卡贴着面板标题：补上边距，左右缩进跟下方图表对齐。
+   只作用于 .box 的直接子级 —— 账号池那组 .stats 在 .box 外面，不受影响。 */
+.box > .stats { margin: 20px 28px 14px; }
+
+/* ③ 日志区高度：底边与左侧栏底边齐平。
+   .nav 底边恒为 100vh - 60px（sticky top:26 + height:100vh-86）；
+   日志区顶边 = shell padding-top 26 + .main padding-top 4 + 顶栏高 + 顶栏
+   margin-bottom 26 = 顶栏高 + 56，故 height = 100vh - 60 - 56 - 顶栏高。
+   padding-bottom 归零，否则 .view 的 64px 内边距会把面板再顶上去一截。 */
+#view-logs { height: calc(100vh - 116px - var(--topbar-h, 67px)); padding-bottom: 0; }
+
+/* ④ 自绘下拉（syanUI .combo 同款）
+   原生 <select> 的展开层由浏览器绘制，CSS 改不动（深色页上永远是系统白底
+   列表）。这里把 <select> 藏起来当数据源，旁边补一个按钮 + fixed 浮层做视觉；
+   选择时回写 sel.value 并派发 change，外部读 .value / 绑 .onchange 的代码
+   一行都不用改。浮层挂在 body 上：.box 有 backdrop-filter + overflow:hidden，
+   会同时成为 fixed 后代的包含块并把它裁掉。 */
+.sy-combo { position: relative; display: inline-flex; align-items: center; }
+.sy-combo-src { display: none !important; }
+.sy-combo-btn {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--bd);
+  background: rgba(255,255,255,.06);
+  color: var(--ink);
+  border-radius: 16px;
+  padding: 10px 36px 10px 14px;
+  font-family: var(--sans); font-size: 13.5px; font-weight: 500; line-height: normal;
+  min-width: 104px; cursor: pointer; position: relative;
+  white-space: nowrap; text-align: left;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.10);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  transition: border-color .18s, box-shadow .18s, background .18s, transform .18s;
+}
+.sy-combo-btn:hover:not(:disabled) { border-color: rgba(140,170,255,.55); transform: translateY(-1px); }
+.sy-combo-btn:focus-visible { outline: none; border-color: rgba(140,170,255,.75); box-shadow: 0 0 0 5px rgba(120,160,255,.14); }
+.sy-combo-btn:disabled { opacity: .5; cursor: default; }
+/* 细线 chevron：7px 方块只留右 + 下两条边，转 45° 就是向下箭头 */
+.sy-combo-btn::after {
+  content: ""; position: absolute; right: 15px; top: calc(50% - 3.5px);
+  width: 7px; height: 7px; border-radius: 1px;
+  border-right: 1.8px solid var(--sub); border-bottom: 1.8px solid var(--sub);
+  transform: rotate(45deg); transition: transform .18s;
+}
+.sy-combo-btn[aria-expanded="true"]::after { transform: rotate(225deg); }
+[data-theme="light"] .sy-combo-btn { background: rgba(255,255,255,.6); box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+/* .sel-note 里的小号下拉：尺寸对齐原来的 .sel-note select */
+.sel-note .sy-combo-btn { min-width: 0; padding: 5px 28px 5px 12px; font: 600 12px var(--sans); border-radius: 12px; }
+.sel-note .sy-combo-btn::after { right: 13px; width: 6px; height: 6px; top: calc(50% - 3px); }
+/* .xs 那一档（#usWindow 等）保持跟基础 select 同高 */
+.sy-combo.xs .sy-combo-btn { min-width: 0; padding-right: 32px; }
+.sy-combo.xs .sy-combo-btn::after { right: 13px; }
+
+.sy-combo-menu {
+  position: fixed; z-index: 120;
+  max-height: 236px; overflow: auto; padding: 6px;
+  background: rgba(255,255,255,.96);
+  border: 1px solid var(--bd); border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(90,70,150,.2), inset 0 1px 0 #fff;
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+/* 用类名而不是 hidden 属性：面板里那条 [hidden]{display:none!important} 会把
+   属性切换路径上的绘制吃掉（headless 实测：同元素直接 unhide 能画、走 click 路径画不出）。
+   syanUI 的 .combo-menu 也是用 .hidden 类切换的。 */
+.sy-combo-menu { display: none; }
+.sy-combo-menu.on { display: block; }
+.sy-combo-item {
+  display: flex; align-items: center; gap: 9px; cursor: pointer;
+  padding: 8px 10px; border-radius: 10px; font-size: 13px; color: var(--ink);
+  white-space: nowrap;
+}
+/* 选中标记用面板同款的自绘方块勾（跟 input[type=checkbox] 一套视觉） */
+.sy-combo-item::before {
+  content: ""; flex: 0 0 14px; width: 14px; height: 14px; border-radius: 5px;
+  border: 1px solid rgba(96,106,160,.36); background-color: rgba(255,255,255,.9);
+  background-repeat: no-repeat; background-position: center; background-size: 11px 11px;
+  box-shadow: inset 0 1px 0 #fff, 0 1px 3px rgba(90,70,150,.10);
+}
+.sy-combo-item:hover, .sy-combo-item.on { background: rgba(120,90,220,.12); }
+.sy-combo-item.on::before {
+  border-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.4 8.5l3 3 6.2-6.6' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"), linear-gradient(135deg,#5b8cff,#a678ff);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 6px 14px rgba(106,140,255,.34);
+}
+[data-theme="dark"] .sy-combo-menu { background: rgba(28,30,44,.97); box-shadow: 0 16px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08); }
+[data-theme="dark"] .sy-combo-item:hover, [data-theme="dark"] .sy-combo-item.on { background: rgba(255,255,255,.1); }
+[data-theme="dark"] .sy-combo-item::before { border-color: rgba(255,255,255,.30); background-color: rgba(255,255,255,.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }

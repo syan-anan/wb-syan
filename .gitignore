@@ -38,3 +38,5 @@ LOOP.md
 PLAN.md
 SPEC.md
 docs/
+# 本地任务检查点（不入库）
+.l-skill-tasks/

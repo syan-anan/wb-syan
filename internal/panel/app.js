@@ -21,6 +21,141 @@ function syncTopbarHeight() {
 syncTopbarHeight();
 addEventListener('resize', syncTopbarHeight);
 
+/* ── 自绘下拉：原生 <select> 的展开层由浏览器绘制，CSS 改不动（深色页上永远
+   是系统白底列表）。这里把 <select> 留作数据源（display:none，.value / 表单
+   FormData / elements[] 照旧可用），旁边补一个按钮 + fixed 浮层做视觉；选中时
+   回写 sel.value 并派发 change，外部读 .value、绑 .onchange 的代码一行都不用改。
+   浮层挂到 body：.box 有 backdrop-filter + overflow:hidden，会同时成为 fixed
+   后代的包含块并把它裁掉。 */
+const SY_COMBO_CLOSERS = [];
+function syComboCloseAll(except) {
+  for (let i = SY_COMBO_CLOSERS.length - 1; i >= 0; i--) {
+    if (SY_COMBO_CLOSERS[i] !== except) SY_COMBO_CLOSERS[i]();
+  }
+}
+function enhanceSelect(sel) {
+  if (!sel || sel.dataset.syCombo === '1') return null;
+  if (sel.multiple || sel.size > 1) return null;   // 多选/列表型不碰
+  sel.dataset.syCombo = '1';
+
+  const wrap = document.createElement('span');
+  wrap.className = 'sy-combo' + (sel.classList.contains('xs') ? ' xs' : '');
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.appendChild(sel);
+  sel.classList.add('sy-combo-src');
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sy-combo-btn';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  if (sel.title) btn.title = sel.title;
+
+  const menu = document.createElement('div');
+  menu.className = 'sy-combo-menu';
+  menu.setAttribute('role', 'listbox');
+  // 初始隐藏由 .sy-combo-menu 的 display:none 负责
+  document.body.appendChild(menu);
+  wrap.appendChild(btn);   // 按钮留在原地（浮层才挂 body）
+
+  const items = [];
+  const sync = () => {
+    const o = sel.selectedOptions && sel.selectedOptions[0];
+    btn.textContent = o ? o.textContent.trim() : '';
+    btn.disabled = !!sel.disabled;
+    for (const it of items) it.el.classList.toggle('on', !!it.opt.selected);
+  };
+  let open = false;
+  const close = () => {
+    if (!open) return;
+    open = false; menu.classList.remove('on'); btn.setAttribute('aria-expanded', 'false');
+    const i = SY_COMBO_CLOSERS.indexOf(close);
+    if (i >= 0) SY_COMBO_CLOSERS.splice(i, 1);
+  };
+  const revealSelected = () => {
+    // 让当前选中项在浮层里可见（不用 scrollIntoView：它可能连带滚页面）
+    const on = menu.querySelector('.sy-combo-item.on') || menu.firstElementChild;
+    if (!on) return;
+    const mt = on.offsetTop, mb = mt + on.offsetHeight;
+    if (mb > menu.scrollTop + menu.clientHeight) menu.scrollTop = mb - menu.clientHeight;
+    else if (mt < menu.scrollTop) menu.scrollTop = mt;
+  };
+  const place = () => {
+    const r = btn.getBoundingClientRect();
+    menu.style.minWidth = Math.round(r.width) + 'px';
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    let left = r.left;
+    if (left + w > innerWidth - 8) left = Math.max(8, innerWidth - 8 - w);
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) {
+      const up = r.top - 6 - h;
+      top = up >= 8 ? up : Math.max(8, innerHeight - 8 - h);
+    }
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+  };
+
+  for (const opt of sel.options) {
+    const el = document.createElement('div');
+    el.className = 'sy-combo-item';
+    el.setAttribute('role', 'option');
+    el.textContent = opt.textContent.trim();
+    el.onclick = () => {
+      if (opt.disabled) return;
+      const changed = sel.value !== opt.value;
+      sel.value = opt.value;              // 触发下面覆写的 setter → sync()
+      sync();
+      close();
+      if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    menu.appendChild(el);
+    items.push({ el: el, opt: opt });
+  }
+
+  btn.onclick = ev => {
+    ev.preventDefault();
+    if (open) { close(); return; }
+    syComboCloseAll(close);
+    open = true; menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true');
+    SY_COMBO_CLOSERS.push(close);
+    // 定位 + 选中项滚动放到下一帧：点击回调里只做「显示」这一件事，
+    // 避免在事件派发过程中对刚显示的浮层做强制布局/滚动写入。
+    requestAnimationFrame(() => { if (open) { place(); revealSelected(); } });
+  };
+
+  /* app.js 里有好几处 sel.value = x 的程序化赋值（accSort / kfAcctRealm /
+     prompt_mode…），覆写实例上的 value 访问器，赋值时把按钮文字一起同步。 */
+  const proto = Object.getPrototypeOf(sel);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value') ||
+               Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+  if (desc && desc.set) {
+    Object.defineProperty(sel, 'value', {
+      configurable: true, enumerable: false,
+      get() { return desc.get.call(this); },
+      set(v) { desc.set.call(this, v); sync(); },
+    });
+  }
+  sel.addEventListener('change', sync);
+  sync();
+  return wrap;
+}
+function enhanceSelects(root) {
+  (root || document).querySelectorAll('select').forEach(enhanceSelect);
+}
+enhanceSelects();
+document.addEventListener('pointerdown', ev => {
+  const t = ev.target;
+  if (t && t.closest && t.closest('.sy-combo, .sy-combo-menu')) return;
+  syComboCloseAll();
+}, true);
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape') syComboCloseAll(); });
+addEventListener('scroll', ev => {
+  const t = ev.target;
+  if (t && t.nodeType === 1 && t.closest && t.closest('.sy-combo-menu')) return;
+  syComboCloseAll();
+}, true);
+addEventListener('resize', () => syComboCloseAll());
+
 /* ── 主题 ─────────────────────────────────────────────────────────── */
 /* 两态翻转（浅/深），首次访问跟随系统偏好；点击总是切换可见外观，符合直觉。 */
 function effTheme() {
