@@ -131,6 +131,69 @@ func TestLifecycleFlush(t *testing.T) {
 	}
 }
 
+// 积分口径：只有带 HasCredits 的尝试才进 Cr/CrN；免费模型（观测到 0）与
+// 「没有观测」必须分得开——CrN 是判据，不是 Cr。
+func TestCreditsAccounting(t *testing.T) {
+	r := New("")
+	now := time.Now()
+	r.Add(now, "cn", "u", "m", "codex", Delta{Credits: 12.5, HasCredits: true}, true)
+	r.Add(now, "cn", "u", "m", "codex", Delta{Credits: 7.5, HasCredits: true}, true)
+	r.Add(now, "cn", "u", "m", "codex", Delta{}, true)                               // 无成本观测
+	r.Add(now, "cn", "u2", "m2", "codex", Delta{Credits: 0, HasCredits: true}, true) // 观测到免费
+	r.Add(now, "cn", "u", "m", "codex", Delta{}, false)                              // 失败且无观测
+
+	s := r.Snapshot(24, nil)
+	if s.Totals.Credits != 20 || s.Totals.CreditsN != 3 {
+		t.Fatalf("totals credits = %v/%d, want 20/3（只有带观测的尝试才入账）", s.Totals.Credits, s.Totals.CreditsN)
+	}
+	var u, u2 bool
+	for _, k := range s.ByAccount {
+		switch k.Key {
+		case "u":
+			u = true
+			if k.Credits != 20 || k.CreditsN != 2 {
+				t.Fatalf("by_account[u] = %v/%d, want 20/2", k.Credits, k.CreditsN)
+			}
+		case "u2":
+			u2 = true
+			// 免费模型：有样本（CrN=1）但消耗为 0——前端据此显示 0 而不是「—」。
+			if k.Credits != 0 || k.CreditsN != 1 {
+				t.Fatalf("by_account[u2] = %v/%d, want 0/1", k.Credits, k.CreditsN)
+			}
+		}
+	}
+	if !u || !u2 {
+		t.Fatalf("by_account 缺少 u/u2: %+v", s.ByAccount)
+	}
+	// 窗口过滤同样作用于积分口径。
+	if old := r.Snapshot(0, nil); old.Totals.Credits != 20 {
+		t.Fatalf("全部历史 credits = %v, want 20", old.Totals.Credits)
+	}
+
+	// 「失败不入账」只针对没有观测的情况：流中途断但末帧已回报 credit 时，
+	// 消费是真实发生的，照样入账——否则线上看到的消耗会系统性偏低。
+	r2 := New("")
+	r2.Add(now, "cn", "u", "m", "codex", Delta{Credits: 3, HasCredits: true}, false)
+	if s2 := r2.Snapshot(24, nil); s2.Totals.Credits != 3 || s2.Totals.CreditsN != 1 {
+		t.Fatalf("失败但有成本观测 credits = %v/%d, want 3/1", s2.Totals.Credits, s2.Totals.CreditsN)
+	}
+}
+
+// 落盘/折叠后积分不丢：Rollup 合并日桶时 Cr/CrN 必须一起搬。
+func TestCreditsSurviveRollupAndFlush(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	r := New(path)
+	old := time.Now().AddDate(0, 0, -100)
+	r.Add(old, "cn", "u", "m", "codex", Delta{Credits: 4, HasCredits: true}, true)
+	r.Add(time.Now(), "cn", "u", "m", "codex", Delta{Credits: 6, HasCredits: true}, true)
+	r.Rollup(time.Now())
+	r.Save()
+	s := New(path).Snapshot(0, nil)
+	if s.Totals.Credits != 10 || s.Totals.CreditsN != 2 {
+		t.Fatalf("折叠+落盘后 credits = %v/%d, want 10/2", s.Totals.Credits, s.Totals.CreditsN)
+	}
+}
+
 // 客户端维度：同 client 合并成一个桶，不同 client 分开；空 client 归 "(unknown)"。
 func TestByClientSplit(t *testing.T) {
 	r := New("")

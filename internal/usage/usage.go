@@ -64,6 +64,11 @@ type bucket struct {
 	LatN   int64   `json:"ln"` // 延迟样本数
 	TPS    float64 `json:"v"`  // 吐字速率累计
 	TPSN   int64   `json:"vn"` // 速率样本数
+	// Cr 逐请求实测消耗的积分合计（上游 usage.credit 累加，可为小数）。
+	// CrN 是有成本观测的请求数：用来区分「窗口内没有观测」（CrN=0 → 前端显示
+	// 「—」）与「观测到 0 消耗」（免费模型：CrN>0 且 Cr=0）。
+	Cr  float64 `json:"cr,omitempty"`
+	CrN int64   `json:"crn,omitempty"`
 }
 
 // file 落盘结构。
@@ -145,6 +150,12 @@ type Delta struct {
 	HasLatency       bool
 	TokensPerSecond  float64
 	HasTPS           bool
+	// Credits 本次尝试实测消耗的积分（上游 usage 里的 credit，可为小数）。
+	// HasCredits=false 表示这次没有成本观测（失败 / 上游没返回 credit），
+	// 与「观测到 0 消耗」（免费模型）区分开——两者都写 0 会让「没记账」
+	// 被读成「没消耗」。
+	Credits    float64
+	HasCredits bool
 }
 
 // Add 记录一次请求尝试。
@@ -201,6 +212,10 @@ func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta,
 		b.TPS += d.TokensPerSecond
 		b.TPSN++
 	}
+	if d.HasCredits {
+		b.Cr += d.Credits
+		b.CrN++
+	}
 	r.dirty = true
 }
 
@@ -249,6 +264,8 @@ func (r *Recorder) Rollup(now time.Time) {
 			dst.LatN += src.LatN
 			dst.TPS += src.TPS
 			dst.TPSN += src.TPSN
+			dst.Cr += src.Cr
+			dst.CrN += src.CrN
 		}
 		delete(r.buckets, m.from)
 	}
@@ -334,6 +351,10 @@ type Agg struct {
 	TotalTokens   int64   `json:"total_tokens"`
 	AvgLatencyMs  float64 `json:"avg_latency_ms"`
 	AvgTPS        float64 `json:"avg_tokens_per_second"`
+	// Credits 窗口内逐请求实测消耗的积分合计（可为小数，展示时四舍五入）。
+	// CreditsN 是有成本观测的请求数：0 表示本口径没有样本（不是「消耗 0」）。
+	Credits  float64 `json:"credits"`
+	CreditsN int64   `json:"credits_n"`
 }
 
 // aggAcc 是聚合过程中的累加器：Agg 只放已算好的结果，均值需要样本数才能
@@ -356,6 +377,8 @@ func (g *aggAcc) add(b *bucket) {
 	g.latSamples += b.LatN
 	g.tpsSum += b.TPS
 	g.tpsSamples += b.TPSN
+	g.Credits += b.Cr
+	g.CreditsN += b.CrN
 }
 
 func (g *aggAcc) finish() Agg {

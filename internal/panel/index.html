@@ -239,14 +239,20 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .realm-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
 .realm-opt input { accent-color: var(--accent); margin: 0; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.usage-cell { min-width: 268px; }
+/* 用量四件套：改成固定四列网格（fr 比例），逐行上下对齐——各行的「次 / tok /
+   延迟 / 速率」落在同一列上，不再各自按内容宽度浮动；列宽按「再涨一位数」预留，
+   数字变大只挤列宽、不换行错位。单元格左右各留 14px：.acc td 的 11px 内边距
+   让这一列与左边「在途」、右边「最近成功」贴得太近。 */
+.acc td.usage-cell { min-width: 336px; padding-left: 14px; padding-right: 14px; }
 .usage-line {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  display: grid; grid-template-columns: 1fr 1.55fr 0.95fr 1.45fr; gap: 5px;
+  align-items: center; width: 100%;
   font: 600 11.5px/1.25 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .usage-item {
-  display: inline-flex; align-items: baseline; padding: 3px 6px; border: 1px solid transparent;
-  border-radius: 5px; background: var(--surface-2);
+  display: inline-flex; align-items: baseline; justify-content: center;
+  padding: 3px 6px; border: 1px solid transparent; border-radius: 5px;
+  background: var(--surface-2); overflow: hidden;
 }
 .usage-item b { font-weight: 650; }
 .usage-item em { margin-left: 2px; font: 500 10px/1 var(--sans); font-style: normal; }

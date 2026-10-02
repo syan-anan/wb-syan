@@ -9,6 +9,7 @@ let keysCache = null, keyEditing = null;
 // 账号池排序维度（持久化，刷新后保持）：'added' 按添加顺序（默认）/ 'realm' 国内·国际。
 let accSort = localStorage.getItem('wb-syan.accsort') === 'realm' ? 'realm' : 'added';
 let refTimer = null;
+let agoTimer = null;   // 「x 秒前」每秒自走的定时器（纯前端，与 5s 轮询无关）
 
 const $ = id => document.getElementById(id);
 
@@ -303,14 +304,41 @@ function esc(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
-function ago(iso) {
-  if (!iso || iso.startsWith('0001-')) return '—';
-  const s = (Date.now() - new Date(iso)) / 1000;
-  if (s < 0) return '刚刚';
+/* agoAt(iso, now) 相对时间换算：now 显式传入，供每秒自走的 tickAgo 复用。
+   半秒内不报「0 秒前」，统一走「刚刚」。 */
+function agoAt(iso, now) {
+  if (!iso || String(iso).startsWith('0001-')) return '—';
+  const s = ((now == null ? Date.now() : now) - new Date(iso).getTime()) / 1000;
+  if (!Number.isFinite(s)) return '—';
+  if (s < 1) return '刚刚';
   if (s < 60) return Math.floor(s) + ' 秒前';
   if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
   if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
   return Math.floor(s / 86400) + ' 天前';
+}
+function ago(iso) { return agoAt(iso, Date.now()); }
+
+// absTime 本地时区秒级绝对时间：「x 秒前」看不出具体时刻，悬停 title 补上。
+function absTime(iso) {
+  if (!iso || String(iso).startsWith('0001-')) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+/* tickAgo 每秒把页面上所有 [data-ago] 的文本重算一遍。
+   只改 textContent，不发请求、不重建 DOM——「x 秒前」本来就是纯前端换算，
+   数据本身仍按 5s 轮询拉取：服务端开销 0（不占内存、不多打上游）。
+   后台标签页直接跳过，不白烧 CPU。 */
+function tickAgo() {
+  if (document.hidden) return;
+  const now = Date.now();
+  for (const el of document.querySelectorAll('[data-ago]')) {
+    const txt = agoAt(el.getAttribute('data-ago'), now);
+    if (el.textContent !== txt) el.textContent = txt;
+  }
 }
 function dur(sec) {
   sec = Math.max(0, Math.round(sec));
@@ -459,7 +487,8 @@ function renderAccounts(list) {
         '<span class="usage-item usage-latency"><b>' + latency + '</b></span>' +
         '<span class="usage-item usage-rate"><b>' + rate + '</b></span>' +
       '</span></td>' +
-      '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
+      '<td class="num ago-cell" style="color:var(--ink-3)" data-ago="' + esc(s.last_success || '') +
+        '" title="' + esc(absTime(s.last_success)) + '">' + ago(s.last_success) + '</td>' +
       '<td class="acts">' +
         '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '">签到</button>' +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '">余额</button>' +
@@ -942,6 +971,10 @@ function start() {
   loadOverview(true);
   if (refTimer) clearInterval(refTimer);
   refTimer = setInterval(refreshVisible, 5000);
+  // 「x 秒前」每秒自走：与整表 5s 轮询解耦，服务端一次请求都不多发。
+  if (agoTimer) clearInterval(agoTimer);
+  agoTimer = setInterval(tickAgo, 1000);
+  tickAgo();
   checkAuthGate();
 }
 async function checkAuthGate() {
@@ -1509,6 +1542,19 @@ function reattachQueueView() {
 /* 图表用原生 SVG 手绘：面板是 go:embed 单文件、无构建步骤，引入图表库
    就得带上打包器，得不偿失。这里只需要堆叠柱状图，二十行足够。 */
 
+/* fmtInt 精确整数（千分位），专给「积分」这类要对账的口径：12,838 而不是
+   12.8k——缩写会丢精度。手写分组而不走 toLocaleString，避免依赖运行时 ICU
+   数据（精简版 node / 老浏览器上 toLocaleString 行为不一致）。 */
+function fmtInt(n) {
+  const v = Math.round(Number(n) || 0);
+  const s = String(Math.abs(v));
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += ',';
+    out += s[i];
+  }
+  return (v < 0 ? '-' : '') + out;
+}
 function fmtTok(n) {
   n = Number(n || 0);
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -1568,6 +1614,12 @@ function usRow(name, sub, a, mid, withPerf, credit) {
 
 function renderUsage(d) {
   const t = d.totals || {};
+  // 积分两个口径的说明放进 title：窗口口径是逐请求实测（随筛选变），
+  // 账号池口径是「总额度 − 剩余」的累计值（不随窗口变，覆盖记账之前的历史）。
+  const poolCredit = Number(d.credit_used_pool_total || 0);
+  const creditTip = '窗口内逐请求实测消耗（上游 usage.credit 累加，随上方窗口变化）' +
+    (poolCredit ? '\n账号池累计口径：' + fmtInt(poolCredit) + '（总额度 − 剩余，不随窗口变化）' : '') +
+    (t.credits_n ? '' : '\n本窗口没有成本样本：逐请求积分记账自 v1.13.0 起，更早的分桶没有该字段');
   $('usStats').innerHTML =
     usStat(fmtTok(t.requests), '请求数') +
     usStat(fmtTok(t.total_tokens), '总 token') +
@@ -1575,10 +1627,9 @@ function renderUsage(d) {
     usStat(fmtTok(t.completion_tokens), 'completion') +
     usStat(t.errors ? String(t.errors) : '0', '失败尝试', t.errors ? 'warn' : '') +
     usStat(fmtMs(t.avg_latency_ms), '平均延迟') +
-    // 积分不在用量桶里（桶只记 token）：来源是账号池的「套餐总额度 - 剩余」，
-    // 属累计口径、不随窗口变化，故 label 与 title 都写明，避免误读成窗口内消耗。
-    usStat(d.credit_used_total ? fmtTok(d.credit_used_total) : '—', '积分已用（累计）', '',
-           '账号池全部账号累计已用积分（当前有效套餐口径，不随上方窗口变化）');
+    // 积分已用：窗口内逐请求实测消耗（上游 usage.credit 累加），随上方窗口变化。
+    // 窗口内没有成本样本（t.credits_n === 0）时显示「—」，不拿 0 冒充「没消耗」。
+    usStat(t.credits_n ? fmtInt(t.credits) : '—', '积分已用', '', creditTip);
 
   // 卡片、三张表与时序图全部按所选窗口统计（切窗口数字随之变化）；
   // 「全部历史」含 90 天前折叠出的日桶。这里标注当前口径与数据起点。
@@ -1590,13 +1641,13 @@ function renderUsage(d) {
     (d.since ? ' · 数据自 ' + d.since.replace('T', ' ') : '') +
     (d.file_bytes ? ' · 文件 ' + (d.file_bytes / 1024).toFixed(1) + ' KB' : '');
 
-  // 「按账号」多一列「积分已用」：数值来自账号池（uid → 已用），不是用量桶
-  // 字段，故按 uid 关联；账号已移除 / 额度未知时显示「—」，不猜 0。
-  const creditsUsed = d.credit_used || {};
+  // 「按账号」多一列「积分已用」：窗口内逐请求实测（by_account[].credits），
+  // 随上方窗口变化；该账号在本窗口没有成本样本（credits_n = 0）时显示「—」，
+  // 不猜 0——否则「没记账」会被读成「没消耗」。
   $('usAccBody').innerHTML = (d.by_account || []).map(x =>
     usRow(x.key.slice(0, 8), x.extra || '', x,
       '<td class="num">' + esc(x.realm || '') + '</td>', true,
-      creditsUsed[x.key] ? fmtTok(creditsUsed[x.key]) : '—')
+      x.credits_n ? fmtInt(x.credits) : '—')
   ).join('') || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
 
   $('usModelBody').innerHTML = (d.by_model || []).map(x =>

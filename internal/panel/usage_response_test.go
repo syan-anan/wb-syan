@@ -22,9 +22,9 @@ func TestUsageResponseJSONShape(t *testing.T) {
 	}, true)
 
 	resp := usageResponse{
-		Snapshot:        rec.Snapshot(72, nil),
-		CreditUsedTotal: 1234,
-		CreditUsed:      map[string]int64{"uid1": 1234},
+		Snapshot:            rec.Snapshot(72, nil),
+		CreditUsedTotal:     1234,
+		CreditUsedPoolTotal: 5678,
 	}
 	raw, err := json.Marshal(resp)
 	if err != nil {
@@ -39,12 +39,32 @@ func TestUsageResponseJSONShape(t *testing.T) {
 			t.Errorf("usage 响应缺少顶层字段 %q（内嵌 Snapshot 被破坏？）", k)
 		}
 	}
-	var total int64
+	var total float64
 	if err := json.Unmarshal(got["credit_used_total"], &total); err != nil || total != 1234 {
 		t.Errorf("credit_used_total = %s (err=%v), want 1234", got["credit_used_total"], err)
 	}
-	var per map[string]int64
-	if err := json.Unmarshal(got["credit_used"], &per); err != nil || per["uid1"] != 1234 {
-		t.Errorf("credit_used = %s (err=%v), want {\"uid1\":1234}", got["credit_used"], err)
+	var poolTotal int64
+	if err := json.Unmarshal(got["credit_used_pool_total"], &poolTotal); err != nil || poolTotal != 5678 {
+		t.Errorf("credit_used_pool_total = %s (err=%v), want 5678", got["credit_used_pool_total"], err)
+	}
+	// 逐账号积分走 by_account[].credits（Agg 内嵌字段），不再是单独的 map：
+	// 键名/类型变了前端就读不到，故连 credits_n 一起锁住。
+	var byAcct []map[string]json.RawMessage
+	if err := json.Unmarshal(got["by_account"], &byAcct); err != nil || len(byAcct) != 1 {
+		t.Fatalf("by_account = %s (err=%v), want 1 行", got["by_account"], err)
+	}
+	for _, k := range []string{"credits", "credits_n"} {
+		if _, ok := byAcct[0][k]; !ok {
+			t.Errorf("by_account[0] 缺少字段 %q（积分窗口口径断了？）", k)
+		}
+	}
+	var tot map[string]json.RawMessage
+	if err := json.Unmarshal(got["totals"], &tot); err != nil {
+		t.Fatalf("totals unmarshal: %v", err)
+	}
+	for _, k := range []string{"credits", "credits_n"} {
+		if _, ok := tot[k]; !ok {
+			t.Errorf("totals 缺少字段 %q（积分窗口口径断了？）", k)
+		}
 	}
 }

@@ -608,7 +608,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 放在闭包外算，重试换号时不重复解析（同一请求内所有上游尝试同标签）。
 	agentClient := agentClientLabel(r.Header)
 
-	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time) {
+	// credit/hasCredit 是本次尝试上游回报的实测积分消耗（流式取末帧 usage、
+	// 非流式取聚合 usage）。传进来说明「这次有成本观测」，会随用量桶一起落账，
+	// 支撑用量页按窗口统计「积分已用」；失败分支一律传 0/false。
+	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool) {
 		delta.Model = peek.Model
 		latency := time.Since(started)
 		latencyMs := latency.Milliseconds()
@@ -642,6 +645,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				HasLatency:       delta.HasLatencyMs,
 				TokensPerSecond:  delta.TokensPerSecond,
 				HasTPS:           delta.HasTokensPerSecond,
+				Credits:          credit,
+				HasCredits:       hasCredit,
 			}, delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens)
 		}
 	}
@@ -776,7 +781,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
 			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
 			// 上游 client 已打 transport error 日志。
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
 			h.cfg.Pool.NoteFailures(acct.UID)
@@ -787,7 +792,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if status >= 400 {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
 			st.status = status
 			var kind upstream.ErrKind
 			if uerr != nil {
@@ -901,7 +906,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.status = http.StatusBadGateway
 				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
 			}
-			recordAttempt(acct.UID, stats.Usage(), attemptStarted)
+			// 成本先取再记账：recordAttempt 要把本次实测 credit 一起写进用量桶，
+			// 顺序反了就只能落个「有 token 没成本」的桶。
+			credit, hasCredit := stats.Credit()
+			recordAttempt(acct.UID, stats.Usage(), attemptStarted, credit, hasCredit)
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
 			// 不写入零值——否则「没观测到 usage」被伪造成「测得 0 token」，
@@ -911,7 +919,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			// 成本账本：末帧 usage 带 credit 与 token 总数时记录实测单价，
 			// 供下次选号把免费/便宜的号排在前面。
-			if credit, ok := stats.Credit(); ok {
+			if hasCredit {
 				if total, tok := stats.TotalTokens(); tok && total > 0 {
 					h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, total)
 				}
@@ -922,19 +930,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		resp, err := upstream.Aggregate(rc)
 		rc.Close()
 		if err != nil {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
 			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			st.status = http.StatusBadGateway
 			return
 		}
-		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted)
+		// 成本先取再记账（同流式分支）：本次实测 credit 随用量桶一起落账。
+		credit, creditTotal, hasCredit := usageCreditTotal(resp)
+		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, credit, hasCredit)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
 		st.toks = completionTokens(resp)
 		// 成本账本（非流式）：从聚合响应的 usage 取 credit 与 token 总数。
-		if credit, total, ok := usageCreditTotal(resp); ok {
-			h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, total)
+		if hasCredit {
+			h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, creditTotal)
 		}
 		return
 	}
