@@ -26,6 +26,10 @@ import (
 	"time"
 )
 
+// legacyClientLabel 老版本落盘数据（没有 client 维度）在面板上的归类标签。
+// 加维度之前的桶无法回溯归因——不猜，明确标成历史数据。
+const legacyClientLabel = "(历史数据)"
+
 // hourlyKeep 小时桶的保留时长；超出后折叠为日桶。
 const hourlyKeep = 90 * 24 * time.Hour
 
@@ -44,19 +48,22 @@ const (
 // bucket 一个 (时间片, realm, uid, model) 的累计量。
 // JSON 字段名刻意取短，因为桶数量会随时间增长。
 type bucket struct {
-	Scope string  `json:"s"` // "h:2006-01-02T15" 或 "d:2006-01-02"
-	Realm string  `json:"r"`
-	UID   string  `json:"u"`
-	Model string  `json:"m"`
-	Req   int64   `json:"q"`  // 请求数（含失败）
-	Err   int64   `json:"e"`  // 失败数
-	PT    int64   `json:"p"`  // prompt tokens
-	CT    int64   `json:"c"`  // completion tokens
-	TT    int64   `json:"t"`  // total tokens（上游给什么用什么的合计）
-	LatMs int64   `json:"l"`  // 延迟累计（ms）
-	LatN  int64   `json:"ln"` // 延迟样本数
-	TPS   float64 `json:"v"`  // 吐字速率累计
-	TPSN  int64   `json:"vn"` // 速率样本数
+	Scope string `json:"s"` // "h:2006-01-02T15" 或 "d:2006-01-02"
+	Realm string `json:"r"`
+	UID   string `json:"u"`
+	Model string `json:"m"`
+	// Client 调用方客户端标签（识别不到时形如 "未识别: <UA首段>"）。
+	// 维度加在 model 之后：同一个模型可能被多个客户端调用，分开才看得清。
+	Client string  `json:"cl"`
+	Req    int64   `json:"q"`  // 请求数（含失败）
+	Err    int64   `json:"e"`  // 失败数
+	PT     int64   `json:"p"`  // prompt tokens
+	CT     int64   `json:"c"`  // completion tokens
+	TT     int64   `json:"t"`  // total tokens（上游给什么用什么的合计）
+	LatMs  int64   `json:"l"`  // 延迟累计（ms）
+	LatN   int64   `json:"ln"` // 延迟样本数
+	TPS    float64 `json:"v"`  // 吐字速率累计
+	TPSN   int64   `json:"vn"` // 速率样本数
 }
 
 // file 落盘结构。
@@ -144,7 +151,7 @@ type Delta struct {
 //
 // ok=false 表示该次尝试失败（传输错误 / 上游 >=400 / 解析失败）。失败尝试通常
 // 没有 usage，但**仍要计入请求数与失败数**——重试放大正是靠这一列才看得出来。
-func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool) {
+func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta, ok bool) {
 	if r == nil {
 		return
 	}
@@ -154,15 +161,20 @@ func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool
 	if model == "" {
 		model = "(unknown)"
 	}
+	// 空 client 不该出现（识别函数总会给一个非空标签），但兜底一次，
+	// 避免将来有人绕过 agentClientLabel 直接调用时产生一个空字符串维度。
+	if client == "" {
+		client = "(unknown)"
+	}
 	scope := "h:" + now.Format(hourLayout)
-	key := scope + "|" + realm + "|" + uid + "|" + model
+	key := scope + "|" + realm + "|" + uid + "|" + model + "|" + client
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	b := r.buckets[key]
 	if b == nil {
-		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model}
+		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Client: client}
 		r.buckets[key] = b
 	}
 	b.Req++
@@ -214,7 +226,7 @@ func (r *Recorder) Rollup(now time.Time) {
 			continue
 		}
 		day := "d:" + ts.Format(dayLayout)
-		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model})
+		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Client})
 	}
 	for _, m := range moves {
 		src := r.buckets[m.from]
@@ -262,7 +274,12 @@ func (r *Recorder) load() error {
 	}
 	for i := range f.Buckets {
 		b := f.Buckets[i]
-		r.buckets[b.Scope+"|"+b.Realm+"|"+b.UID+"|"+b.Model] = &b
+		// 旧版本落盘的桶没有 Client 字段（反序列化后为空串），key 里同样带空段，
+		// 与 Add 的拼法保持一致：老数据因此自然归入「(历史数据)」那一档。
+		if b.Client == "" {
+			b.Client = legacyClientLabel
+		}
+		r.buckets[b.Scope+"|"+b.Realm+"|"+b.UID+"|"+b.Model+"|"+b.Client] = &b
 	}
 	log.Printf("[usage] 已恢复 %d 个用量桶（%s）", len(r.buckets), r.path)
 	return nil
@@ -373,6 +390,8 @@ type Snapshot struct {
 	ByRealm   []KeyedAgg `json:"by_realm"`
 	ByAccount []KeyedAgg `json:"by_account"`
 	ByModel   []KeyedAgg `json:"by_model"`
+	// ByClient 按调用方客户端聚合（Codex / Claude Code / WorkBuddy / 未识别…）。
+	ByClient  []KeyedAgg `json:"by_client"`
 	Series    []Point    `json:"series"`
 	Buckets   int        `json:"buckets"`
 	FileBytes int64      `json:"file_bytes"`
@@ -411,6 +430,7 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 	acctAgg := map[string]*aggAcc{}
 	acctRealm := map[string]string{}
 	modelAgg := map[string]*aggAcc{}
+	clientAgg := map[string]*aggAcc{}
 	hourSeries := map[string]*aggAcc{}
 	daySeries := map[string]*aggAcc{}
 
@@ -465,6 +485,11 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 		}
 		modelAgg[b.Model].add(b)
 
+		if clientAgg[b.Client] == nil {
+			clientAgg[b.Client] = &aggAcc{}
+		}
+		clientAgg[b.Client].add(b)
+
 		if strings.HasPrefix(b.Scope, "h:") {
 			scope := strings.TrimPrefix(b.Scope, "h:")
 			if hourSeries[scope] == nil {
@@ -487,6 +512,7 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 			return k, nicks[k]
 		}),
 		ByModel:   keyed(modelAgg, func(k string) (string, string) { return k, "" }),
+		ByClient:  keyed(clientAgg, func(k string) (string, string) { return k, "" }),
 		Buckets:   matched,
 		Generated: time.Now().Format(time.RFC3339),
 	}

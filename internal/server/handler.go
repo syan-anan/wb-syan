@@ -604,6 +604,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			unbindSticky()
 		}
 	}
+	// 调用方客户端标签：整轮只算一次。入站头在进入本函数时已定型，
+	// 放在闭包外算，重试换号时不重复解析（同一请求内所有上游尝试同标签）。
+	agentClient := agentClientLabel(r.Header)
+
 	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time) {
 		delta.Model = peek.Model
 		latency := time.Since(started)
@@ -627,7 +631,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if a, ok := h.cfg.Pool.Status(uid); ok && a.Realm != "" {
 				realm = a.Realm
 			}
-			h.cfg.Usage.Add(time.Now(), realm, uid, delta.Model, usage.Delta{
+			h.cfg.Usage.Add(time.Now(), realm, uid, delta.Model, agentClient, usage.Delta{
 				PromptTokens:     delta.PromptTokens,
 				HasPromptTokens:  delta.HasPromptTokens,
 				CompletionTokens: delta.CompletionTokens,

@@ -1496,6 +1496,11 @@ function renderUsage(d) {
   $('usRealmBody').innerHTML = (d.by_realm || []).map(x =>
     usRow(x.key, '', x, '', false)).join('') || '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
 
+  // 按客户端：列数与「按账号」一致（mark + 客户端 + 5 个数字列 + 均延迟/均速率 = 9），
+  // 故 withPerf 传 true，colspan 用 9；客户端名由 usRow 内部 esc() 转义。
+  $('usClientBody').innerHTML = (d.by_client || []).map(x =>
+    usRow(x.key, '', x, '', true)).join('') || '<tr><td colspan="9" class="empty">暂无数据</td></tr>';
+
   renderUsageChart(d.series || []);
 }
 

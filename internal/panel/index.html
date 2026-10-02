@@ -723,6 +723,22 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           </table>
         </div>
       </div>
+
+      <div class="box">
+        <header><h3>按客户端</h3><span class="grow"></span>
+          <span class="note">识别不到的显示原始 UA 首段</span></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>客户端</th>
+              <th class="num">请求</th><th class="num">失败</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
+              <th class="num">均延迟</th><th class="num">均速率</th>
+            </tr></thead>
+            <tbody id="usClientBody"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- 密钥管理 -->

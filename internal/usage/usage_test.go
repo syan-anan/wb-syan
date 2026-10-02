@@ -12,11 +12,11 @@ import (
 func TestAddAndTotals(t *testing.T) {
 	r := New("")
 	now := time.Now()
-	r.Add(now, "cn", "uid1", "glm-5.2", Delta{PromptTokens: 100, HasPromptTokens: true, CompletionTokens: 50, HasCompletion: true, LatencyMs: 200, HasLatency: true}, true)
+	r.Add(now, "cn", "uid1", "glm-5.2", "codex", Delta{PromptTokens: 100, HasPromptTokens: true, CompletionTokens: 50, HasCompletion: true, LatencyMs: 200, HasLatency: true}, true)
 	// 失败尝试：无 usage → 只计请求数与失败数，token 不加。
-	r.Add(now, "global", "uid1", "claude-4.6", Delta{}, false)
+	r.Add(now, "global", "uid1", "claude-4.6", "codex", Delta{}, false)
 	// 上游没给 total 时用 pt+ct 兜底，保证总量口径连续。
-	r.Add(now, "cn", "uid1", "glm-5.2", Delta{PromptTokens: 10, HasPromptTokens: true, CompletionTokens: 5, HasCompletion: true}, true)
+	r.Add(now, "cn", "uid1", "glm-5.2", "codex", Delta{PromptTokens: 10, HasPromptTokens: true, CompletionTokens: 5, HasCompletion: true}, true)
 
 	s := r.Snapshot(24, nil)
 	if s.Totals.Requests != 3 || s.Totals.Errors != 1 {
@@ -44,9 +44,9 @@ func TestAddAndTotals(t *testing.T) {
 func TestRollupIdempotent(t *testing.T) {
 	r := New("")
 	old := time.Now().AddDate(0, 0, -100) // 100 天前，超出 90 天小时保留
-	r.Add(old, "cn", "u", "m", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
-	r.Add(old, "cn", "u", "m", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
-	r.Add(time.Now(), "cn", "u", "m", Delta{PromptTokens: 1, HasPromptTokens: true}, true)
+	r.Add(old, "cn", "u", "m", "codex", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
+	r.Add(old, "cn", "u", "m", "codex", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
+	r.Add(time.Now(), "cn", "u", "m", "codex", Delta{PromptTokens: 1, HasPromptTokens: true}, true)
 
 	r.Rollup(time.Now())
 	after := r.Snapshot(24, nil)
@@ -76,7 +76,7 @@ func TestRollupIdempotent(t *testing.T) {
 func TestFlushLoadRoundtrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.json")
 	r1 := New(path)
-	r1.Add(time.Now(), "cn", "u1", "glm-5.2", Delta{PromptTokens: 42, HasPromptTokens: true, TotalTokens: 42, HasTotal: true}, true)
+	r1.Add(time.Now(), "cn", "u1", "glm-5.2", "codex", Delta{PromptTokens: 42, HasPromptTokens: true, TotalTokens: 42, HasTotal: true}, true)
 	r1.Save()
 
 	r2 := New(path)
@@ -96,8 +96,8 @@ func TestFlushLoadRoundtrip(t *testing.T) {
 func TestSnapshotWindowFilter(t *testing.T) {
 	r := New("")
 	now := time.Now()
-	r.Add(now.Add(-48*time.Hour), "cn", "u", "m", Delta{PromptTokens: 5, HasPromptTokens: true}, true) // 窗口(24h)外
-	r.Add(now, "cn", "u", "m", Delta{PromptTokens: 3, HasPromptTokens: true}, true)                    // 窗口内
+	r.Add(now.Add(-48*time.Hour), "cn", "u", "m", "codex", Delta{PromptTokens: 5, HasPromptTokens: true}, true) // 窗口(24h)外
+	r.Add(now, "cn", "u", "m", "codex", Delta{PromptTokens: 3, HasPromptTokens: true}, true)                    // 窗口内
 	s := r.Snapshot(24, nil)
 	if s.Totals.Requests != 1 || s.Totals.PromptTokens != 3 {
 		t.Fatalf("24h 窗口 totals = %d/%d, want 1/3（48h 前的数据应被过滤）", s.Totals.Requests, s.Totals.PromptTokens)
@@ -124,9 +124,62 @@ func TestLifecycleFlush(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.json")
 	r := New(path)
 	r.Start()
-	r.Add(time.Now(), "cn", "u", "m", Delta{PromptTokens: 9, HasPromptTokens: true}, true)
+	r.Add(time.Now(), "cn", "u", "m", "codex", Delta{PromptTokens: 9, HasPromptTokens: true}, true)
 	r.Stop()
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("Stop 后应有落盘文件: %v", err)
+	}
+}
+
+// 客户端维度：同 client 合并成一个桶，不同 client 分开；空 client 归 "(unknown)"。
+func TestByClientSplit(t *testing.T) {
+	r := New("")
+	now := time.Now()
+	r.Add(now, "cn", "u", "glm-5.2", "codex", Delta{PromptTokens: 10, HasPromptTokens: true}, true)
+	r.Add(now, "cn", "u", "glm-5.2", "codex", Delta{PromptTokens: 20, HasPromptTokens: true}, true)
+	r.Add(now, "cn", "u", "glm-5.2", "claude-code", Delta{PromptTokens: 5, HasPromptTokens: true}, true)
+	r.Add(now, "cn", "u", "glm-5.2", "", Delta{PromptTokens: 1, HasPromptTokens: true}, true)
+
+	s := r.Snapshot(24, nil)
+	if len(s.ByClient) != 3 {
+		t.Fatalf("by_client = %d 项, want 3: %+v", len(s.ByClient), s.ByClient)
+	}
+	// 按 total 降序：codex(30) > claude-code(5) > (unknown)(1)
+	if s.ByClient[0].Key != "codex" || s.ByClient[0].Requests != 2 || s.ByClient[0].TotalTokens != 30 {
+		t.Fatalf("by_client[0] = %+v, want codex 2 req / 30 tt（同 client 应合并）", s.ByClient[0])
+	}
+	if s.ByClient[1].Key != "claude-code" || s.ByClient[1].Requests != 1 {
+		t.Fatalf("by_client[1] = %+v, want claude-code 1 req", s.ByClient[1])
+	}
+	if s.ByClient[2].Key != "(unknown)" || s.ByClient[2].Requests != 1 {
+		t.Fatalf("by_client[2] = %+v, want (unknown) 1 req（空 client 兜底）", s.ByClient[2])
+	}
+}
+
+// 老版本落盘数据（桶里没有 cl 字段）加载后归入 "(历史数据)"，且不丢量。
+func TestLegacyClientBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	now := time.Now()
+	raw := `{"version":1,"saved":"","buckets":[{"s":"h:` + now.Format("2006-01-02T15") + `","r":"cn","u":"u1","m":"glm-5.2","q":3,"e":0,"p":7,"c":0,"t":7,"l":0,"ln":0,"v":0,"vn":0}]}`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := New(path)
+	s := r.Snapshot(24, nil)
+	if s.Totals.Requests != 3 || s.Totals.PromptTokens != 7 {
+		t.Fatalf("恢复后 totals = %d/%d, want 3/7", s.Totals.Requests, s.Totals.PromptTokens)
+	}
+	if len(s.ByClient) != 1 || s.ByClient[0].Key != legacyClientLabel {
+		t.Fatalf("by_client = %+v, want 单行 %q", s.ByClient, legacyClientLabel)
+	}
+	if s.ByClient[0].Requests != 3 || s.ByClient[0].TotalTokens != 7 {
+		t.Fatalf("by_client[0] = %+v, want 3 req / 7 tt", s.ByClient[0])
+	}
+	// 回填后 key 里应带 client 段，且再次落盘读回仍归同一行。
+	r.Save()
+	r2 := New(path)
+	s2 := r2.Snapshot(24, nil)
+	if len(s2.ByClient) != 1 || s2.ByClient[0].Key != legacyClientLabel || s2.ByClient[0].TotalTokens != 7 {
+		t.Fatalf("二次加载 by_client = %+v, want 仍为单行 %q / 7 tt", s2.ByClient, legacyClientLabel)
 	}
 }
