@@ -1524,8 +1524,10 @@ function fmtMs(ms) {
 }
 function fmtRate(r) { return r ? Number(r).toFixed(1) + ' tok/s' : '—'; }
 
-function usStat(v, k, cls) {
-  return '<div class="stat ' + (cls || '') + '"><div class="v">' + esc(v) +
+function usStat(v, k, cls, title) {
+  return '<div class="stat ' + (cls || '') + '"' +
+         (title ? ' title="' + esc(title) + '"' : '') +
+         '><div class="v">' + esc(v) +
          '</div><div class="k">' + esc(k) + '</div></div>';
 }
 
@@ -1543,8 +1545,10 @@ function usBar(prompt, completion, total) {
 /* usRow 生成一行。mid 是插在「名称」之后、请求数之前的额外单元格（如「域」列）。
    withPerf 控制是否追加延迟/速率两列——只有「按账号」表的表头带这两列；
    模型表与域表没有，多输出会造成列错位。早先靠「mid 是否为 undefined」隐式
-   判断，调用方稍一改动就会错列，故改为显式参数。 */
-function usRow(name, sub, a, mid, withPerf) {
+   判断，调用方稍一改动就会错列，故改为显式参数。
+   credit 是「积分已用」单元格的成品文本（只有「按账号」表传值）；undefined =
+   该表没有这一列，整格不输出——否则表头与单元格会错位。 */
+function usRow(name, sub, a, mid, withPerf, credit) {
   return '<tr>' +
     '<td class="mark" aria-hidden="true"></td>' +
     '<td>' + esc(name) + (sub ? '<div class="note">' + esc(sub) + '</div>' : '') + '</td>' +
@@ -1554,6 +1558,7 @@ function usRow(name, sub, a, mid, withPerf) {
     '<td class="num">' + fmtTok(a.prompt_tokens) + '</td>' +
     '<td class="num">' + fmtTok(a.completion_tokens) + '</td>' +
     '<td class="num">' + fmtTok(a.total_tokens) + '</td>' +
+    (credit === undefined ? '' : '<td class="num">' + credit + '</td>') +
     (withPerf
       ? '<td class="num">' + fmtMs(a.avg_latency_ms) + '</td>' +
         '<td class="num">' + fmtRate(a.avg_tokens_per_second) + '</td>'
@@ -1569,7 +1574,11 @@ function renderUsage(d) {
     usStat(fmtTok(t.prompt_tokens), 'prompt') +
     usStat(fmtTok(t.completion_tokens), 'completion') +
     usStat(t.errors ? String(t.errors) : '0', '失败尝试', t.errors ? 'warn' : '') +
-    usStat(fmtMs(t.avg_latency_ms), '平均延迟');
+    usStat(fmtMs(t.avg_latency_ms), '平均延迟') +
+    // 积分不在用量桶里（桶只记 token）：来源是账号池的「套餐总额度 - 剩余」，
+    // 属累计口径、不随窗口变化，故 label 与 title 都写明，避免误读成窗口内消耗。
+    usStat(d.credit_used_total ? fmtTok(d.credit_used_total) : '—', '积分已用（累计）', '',
+           '账号池全部账号累计已用积分（当前有效套餐口径，不随上方窗口变化）');
 
   // 卡片、三张表与时序图全部按所选窗口统计（切窗口数字随之变化）；
   // 「全部历史」含 90 天前折叠出的日桶。这里标注当前口径与数据起点。
@@ -1581,10 +1590,14 @@ function renderUsage(d) {
     (d.since ? ' · 数据自 ' + d.since.replace('T', ' ') : '') +
     (d.file_bytes ? ' · 文件 ' + (d.file_bytes / 1024).toFixed(1) + ' KB' : '');
 
+  // 「按账号」多一列「积分已用」：数值来自账号池（uid → 已用），不是用量桶
+  // 字段，故按 uid 关联；账号已移除 / 额度未知时显示「—」，不猜 0。
+  const creditsUsed = d.credit_used || {};
   $('usAccBody').innerHTML = (d.by_account || []).map(x =>
     usRow(x.key.slice(0, 8), x.extra || '', x,
-      '<td class="num">' + esc(x.realm || '') + '</td>', true)
-  ).join('') || '<tr><td colspan="10" class="empty">暂无数据</td></tr>';
+      '<td class="num">' + esc(x.realm || '') + '</td>', true,
+      creditsUsed[x.key] ? fmtTok(creditsUsed[x.key]) : '—')
+  ).join('') || '<tr><td colspan="11" class="empty">暂无数据</td></tr>';
 
   $('usModelBody').innerHTML = (d.by_model || []).map(x =>
     usRow(x.key, '', x, '', false)).join('') || '<tr><td colspan="7" class="empty">暂无数据</td></tr>';

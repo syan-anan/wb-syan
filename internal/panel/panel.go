@@ -611,14 +611,39 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 	if hours > 1440 {
 		hours = 1440
 	}
-	// 昵称仅用于展示，取自池快照（不含任何凭证）。
+	// 昵称与积分已用都取自池快照（不含任何凭证）。积分不在用量桶里——
+	// 桶只记 token；积分只存在于账号池，口径是「当前有效套餐：总额度 - 剩余」，
+	// 属累计量、不随 hours 窗口变化，所以在此处旁挂给前端，而不是混进 usage 包。
 	nicks := map[string]string{}
+	creditsUsed := map[string]int64{}
+	var creditUsedTotal int64
 	for _, s := range p.cfg.Pool.List() {
 		if s.Nickname != "" {
 			nicks[s.UID] = s.Nickname
 		}
+		// CreditsTotal == 0 表示额度未知（旧 state / 查询失败），此时不猜：
+		// 留空让前端显示「—」。
+		if s.CreditsTotal > s.Credits {
+			used := s.CreditsTotal - s.Credits
+			creditsUsed[s.UID] = used
+			creditUsedTotal += used
+		}
 	}
-	writeJSON(w, http.StatusOK, p.cfg.Usage.Snapshot(hours, nicks))
+	writeJSON(w, http.StatusOK, usageResponse{
+		Snapshot:        p.cfg.Usage.Snapshot(hours, nicks),
+		CreditUsedTotal: creditUsedTotal,
+		CreditUsed:      creditsUsed,
+	})
+}
+
+// usageResponse 用量快照 + 账号池的积分已用。内嵌 Snapshot 让 JSON 与改造前
+// 完全兼容（只新增字段，不改结构），前端老逻辑不受影响。
+type usageResponse struct {
+	usage.Snapshot
+	// CreditUsedTotal 全部账号累计已用积分（Σ 套餐总额度 - 剩余）。
+	CreditUsedTotal int64 `json:"credit_used_total"`
+	// CreditUsed 逐账号已用积分，键为 uid（与 by_account[].key 同口径）。
+	CreditUsed map[string]int64 `json:"credit_used"`
 }
 
 // usageSave 立即把内存中的用量桶落盘（正常由后台 30s 防抖刷新负责）。
