@@ -23,6 +23,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/syan-anan/wb-syan/main/deplo
 > bash <(curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/syan-anan/wb-syan/main/deploy.sh)
 > ```
 
+脚本内部已经做了容错，不需要你手动处理：
+
+- **代码克隆**：直连 `github.com` 失败 → 自动回退 `ghproxy.net` → 再回退 `gh-proxy.com`
+- **镜像拉取**：`ghcr.io` 拉不动 → 自动改为本地构建（需要能访问 Docker Hub 与 Alpine 源）
+- **端口/目录**：`PORT=18888 APP_DIR=/opt/wb-syan` 可覆盖；`REPO_URL=...` 可强制指定克隆源
+
 可选环境变量：
 
 ```bash
