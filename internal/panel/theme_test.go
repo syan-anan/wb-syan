@@ -51,6 +51,37 @@ func TestFontServed(t *testing.T) {
 	}
 }
 
+// 品牌图标必须能取到且是合法 webp：取不到时 CSS 只是静默不显示，只有肉眼能看出，
+// 所以把「路由挂了 + 类型对 + 魔数对 + 体积没失控」前移到 CI。
+func TestLogoAssetServed(t *testing.T) {
+	p := newTestPanel()
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/img/syan-logo.webp", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
+		t.Errorf("Content-Type=%q want image/webp", ct)
+	}
+	b := rec.Body.Bytes()
+	if len(b) < 12 || string(b[0:4]) != "RIFF" || string(b[8:12]) != "WEBP" {
+		t.Fatalf("不是 webp 魔数，前 12 字节 = %q", b[:min(12, len(b))])
+	}
+	if len(b) > 256*1024 {
+		t.Fatalf("图标体积失控：%d 字节（应 < 256 KB）", len(b))
+	}
+}
+
+// theme.css 必须引用品牌图标，否则换图只改了半边。
+func TestThemeReferencesLogo(t *testing.T) {
+	p := newTestPanel()
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/theme.css", nil))
+	if !strings.Contains(rec.Body.String(), "img/syan-logo.webp") {
+		t.Error("theme.css 未引用 img/syan-logo.webp")
+	}
+}
+
 // index.html 必须在**内联样式之后**引用主题层，且该层只加样式不改结构。
 func TestIndexReferencesThemeAfterInlineStyle(t *testing.T) {
 	p := newTestPanel()

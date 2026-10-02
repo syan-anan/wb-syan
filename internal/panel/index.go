@@ -3,9 +3,10 @@
 // 资源经 go:embed 打进二进制（随服务部署，无外部构建步骤）：
 //   - index.html  页面骨架（含面板原生内联样式，负责布局）
 //   - app.js      全部前端逻辑（独立文件而非内联，为了启用无需 unsafe-inline 的严格 CSP）
-//   - theme.css   液态玻璃主题层（syanUI 视觉）：在 index.html 内联样式之后加载，
-//                 只覆盖视觉，不改 DOM/JS。删掉 index.html 里的 <link> 即回滚。
+//   - theme.css   液态玻璃主题层（syanUI 视觉）：在 index.html 内联样式之后加载，只覆盖视觉，
+//     不改 DOM/JS/接口；删掉 index.html 里的 <link> 即整层回滚。
 //   - fonts/syan-round.woff2  主题层用的粗圆体（5.0 MB，仅 woff2）
+//   - img/syan-logo.webp      主题层的品牌图标（8 KB webp，已从原图压缩）
 //
 // 安全头对"面板页面与全部 /panel/api/* 响应"统一生效：CSP 限制脚本只能来自本服务，
 // 禁止被 iframe 嵌套（防点击劫持），禁 MIME 嗅探，并声明不泄露 Referer 出去。
@@ -27,6 +28,9 @@ var themeCSS []byte
 
 //go:embed fonts/syan-round.woff2
 var fontSyanRound []byte
+
+//go:embed img/syan-logo.webp
+var imgSyanLogo []byte
 
 // csp 内容安全策略（严格版，无需 unsafe-inline）：
 //   - default-src 'none'        默认全禁，逐个开口
@@ -86,4 +90,14 @@ func (p *Panel) fontAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(fontSyanRound)
+}
+
+// imgAsset 输出主题层引用的图片（品牌图标）。体积已压到 8 KB 级、URL 固定，
+// 与页面同源，无跨站泄露面，可长缓存。
+func (p *Panel) imgAsset(w http.ResponseWriter, r *http.Request) {
+	setSecurityHeaders(w)
+	w.Header().Set("Content-Type", "image/webp")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(imgSyanLogo)
 }

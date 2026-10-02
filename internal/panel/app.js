@@ -369,18 +369,29 @@ function rateCell(m) {
   return m.credits ? esc(m.credits) : '—';
 }
 
-async function loadModels() {
+// 模型列表按域（cn / global）筛选：上游 id 形如 "cn:deepseek-v4-flash"。
+// 原始列表缓存在 mdList，切换筛选只重渲染，不再打一次上游。
+let mdList = [];
+let mdProbes = {};
+function mdRealmOf(id) {
+  const s = String(id || '');
+  const i = s.indexOf(':');
+  return i > 0 ? s.slice(0, i).toLowerCase() : '';
+}
+function renderModels() {
   const tb = $('mdBody');
-  tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
-  try {
-    // 探测数据是可选增强：拉取失败不影响模型列表本身
-    const [d, pr] = await Promise.all([api('models'), api('model_probes').catch(() => ({}))]);
-    const list = d.models || [];
-    if (!list.length) { tb.innerHTML = '<tr><td colspan="7"><div class="empty">上游未返回模型</div></td></tr>'; return; }
-    const probes = pr.probes || {};
-    const probeKeys = Object.keys(probes);
-    const probeOf = id => probes[id] || probes[probeKeys.find(k => k.endsWith(':' + id))];
-    tb.innerHTML = list.map(m => {
+  const realmSel = $('mdRealm');
+  const realm = realmSel ? realmSel.value : 'all';
+  const list = realm === 'all' ? mdList : mdList.filter(m => mdRealmOf(m.id) === realm);
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' +
+      (mdList.length ? '该域下没有模型' : '上游未返回模型') + '</div></td></tr>';
+    return;
+  }
+  const probes = mdProbes;
+  const probeKeys = Object.keys(probes);
+  const probeOf = id => probes[id] || probes[probeKeys.find(k => k.endsWith(':' + id))];
+  tb.innerHTML = list.map(m => {
       const eff = (m.supported_efforts || []).slice();
       if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
       const effs = eff.length ? eff.map(e => '<span class="tag warn">' + esc(e) + '</span>').join(' ')
@@ -400,13 +411,27 @@ async function loadModels() {
         '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
         outCell(m, probeOf(m.id)) + '</tr>';
     }).join('');
-    const hit = list.filter(m => probeOf(m.id)).length;
-    $('mdNote').textContent = list.length + ' 个模型 · 已刷新降级缓存' + (hit ? ' · ' + hit + ' 个有实测上限' : '');
+  const hit = list.filter(m => probeOf(m.id)).length;
+  const scope = realm === 'all' ? '' : '（' + realm + '）';
+  $('mdNote').textContent = list.length + ' 个模型' + scope + ' · 已刷新降级缓存' +
+    (hit ? ' · ' + hit + ' 个有实测上限' : '');
+}
+async function loadModels() {
+  const tb = $('mdBody');
+  tb.innerHTML = '<tr><td colspan="7"><div class="empty">正在向上游查询…</div></td></tr>';
+  try {
+    // 探测数据是可选增强：拉取失败不影响模型列表本身
+    const [d, pr] = await Promise.all([api('models'), api('model_probes').catch(() => ({}))]);
+    mdList = d.models || [];
+    mdProbes = pr.probes || {};
+    if (!mdList.length) { tb.innerHTML = '<tr><td colspan="7"><div class="empty">上游未返回模型</div></td></tr>'; return; }
+    renderModels();
   } catch (e) {
     tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
   }
 }
 $('btnModels').onclick = loadModels;
+if ($('mdRealm')) $('mdRealm').onchange = renderModels;
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
 let logCh = 'all';
