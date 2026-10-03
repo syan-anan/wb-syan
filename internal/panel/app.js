@@ -770,6 +770,54 @@ $('logChips').addEventListener('click', ev => {
   document.querySelectorAll('#logChips .chip').forEach(c => c.classList.toggle('on', c === b));
   loadLogs();
 });
+/* 日志中文开关：中文行由服务端预渲染（internal/panel/logzh.go），面板只做
+   选行、按显示列宽截断到一行、悬停给原文三件事。中文行自带频道名
+   （对话·流式 / 系统·警告 / 任务·旅行），所以中文模式下不再重复画频道徽章。 */
+let logZh = true;
+try { logZh = localStorage.getItem('wbLogZh') !== '0'; } catch (e) { /* 隐私模式忽略 */ }
+function syncLogZhBtn() {
+  const b = $('btnLogZh');
+  if (b) b.textContent = logZh ? '中文' : '原文';
+}
+syncLogZhBtn();
+if ($('btnLogZh')) $('btnLogZh').onclick = () => {
+  logZh = !logZh;
+  try { localStorage.setItem('wbLogZh', logZh ? '1' : '0'); } catch (e) { /* 同上 */ }
+  syncLogZhBtn();
+  loadLogs();
+};
+
+/* 日志行按像素截断（懒建一次 canvas 量文本宽度）：等宽字体下 CJK 与 ASCII 的
+   实际宽度并不严格是 2:1，用"列宽"估算会把中文行提前截掉；canvas 量的是渲染
+   宽度，和 #logBox 用同一个 font，截到可用宽度以内就一定不折行。
+   截断只发生在窗口太窄时，尾部的省略号 + 悬停原文保证信息不丢。 */
+let logCtx = null;
+let logFontKey = '';
+function logFont() {
+  const cs = getComputedStyle($('logBox'));
+  return cs.fontSize + ' ' + cs.fontFamily;
+}
+function logMeasure(s) {
+  const font = logFont();
+  if (!logCtx || logFontKey !== font) {
+    logCtx = document.createElement('canvas').getContext('2d');
+    logCtx.font = font;
+    logFontKey = font;
+  }
+  return logCtx.measureText(s).width;
+}
+function fitPx(s, maxPx) {
+  if (maxPx <= 0 || logMeasure(s) <= maxPx) return s;
+  const ell = logMeasure('…');
+  let out = '', w = 0;
+  for (const ch of s) {
+    const cw = logMeasure(ch);
+    if (w + cw > maxPx - ell) break;
+    out += ch; w += cw;
+  }
+  return out + '…';
+}
+
 async function loadLogs() {
   const box = $('logBox');
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
@@ -778,10 +826,13 @@ async function loadLogs() {
     const entries = (d.entries || []).filter(e => logCh === 'all' || e.ch === logCh);
     box.innerHTML = entries.length
       ? entries.map(e => {
-        const lvl = /error|失败|错误/.test(e.text) ? ' e' : /warn|冷却|熔断/.test(e.text) ? ' w' : '';
+        const useZh = logZh && !!e.zh;
+        const body = useZh ? e.zh : e.text;
+        const lvl = /错误|失败|error|ERR/.test(body) ? ' e' : /警告|warn|WARN|冷却|熔断/.test(body) ? ' w' : '';
         const t = e.ts ? new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
-        const ch = logCh === 'all' ? '<i class="lch c-' + esc(e.ch) + '">' + ({ task: '任务', chat: '对话', sys: '系统' }[e.ch] || e.ch) + '</i>' : '';
-        return '<span class="ln' + lvl + '">' + ch + esc(t + ' ' + e.text) + '</span>';
+        const ch = (!useZh && logCh === 'all') ? '<i class="lch c-' + esc(e.ch) + '">' + ({ task: '任务', chat: '对话', sys: '系统' }[e.ch] || e.ch) + '</i>' : '';
+        const line = fitPx(t + ' ' + body, box.clientWidth - 34 - (ch ? 46 : 0));
+        return '<span class="ln' + lvl + '" title="' + esc(e.text) + '">' + ch + esc(line) + '</span>';
       }).join('')
       : '<span style="color:var(--ink-3)">暂无日志</span>';
     if (logPin && atEnd) box.scrollTop = box.scrollHeight;

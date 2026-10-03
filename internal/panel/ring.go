@@ -21,10 +21,14 @@ const (
 )
 
 // LogEntry 单条日志（时间戳取写入时刻；log 包行的行首日期时间已被剥离）。
+//
+// Text 是原文，任何视图都可回退到它；Zh 是同一行的中文渲染副本（logzh.go），
+// 没命中翻译规则时为空串，面板据此回退原文——中文只是展示层，不影响 stdout。
 type LogEntry struct {
 	TS   time.Time `json:"ts"`
 	Ch   string    `json:"ch"`
 	Text string    `json:"text"`
+	Zh   string    `json:"zh,omitempty"`
 }
 
 // taskPrefixes 任务动作日志的行首标识（scheduler 与 panel 的既有口径）。
@@ -76,7 +80,8 @@ func (r *Ring) Write(p []byte) (int, error) {
 			continue
 		}
 		text := tsPrefixRe.ReplaceAllString(line, "")
-		r.entries = append(r.entries, LogEntry{TS: now, Ch: classifyLine(text), Text: text})
+		zh, _ := RenderZh(text)
+		r.entries = append(r.entries, LogEntry{TS: now, Ch: classifyLine(text), Text: text, Zh: zh})
 		if overflow := len(r.entries) - r.cap; overflow > 0 {
 			r.entries = r.entries[overflow:]
 		}
