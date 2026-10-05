@@ -1,0 +1,26 @@
+# 构建上下文排除：凭据、运行数据、版本库元数据
+.git/
+.github/
+.gitignore
+.gitattributes
+.env
+.env.*
+auths/
+data/
+config.json
+*.tmp
+*.log
+__pycache__/
+scripts/__pycache__/
+
+# 根目录本地构建产物（镜像内由多阶段构建重新编译）
+/login
+/credit
+/wb-syan
+/signin_bin
+/wb-syan.exe
+*.zip
+
+# 文档与许可证不进运行镜像
+*.md
+LICENSE

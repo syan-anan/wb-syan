@@ -1,0 +1,40 @@
+# wb-syan · 一键启动
+#
+#   本地构建（不需要任何前置）：
+#     cp config.example.json config.json && mkdir -p auths data
+#     docker compose up -d --build
+#
+#   用预构建镜像（.env 里填好 GHCR_IMAGE）：
+#     docker compose pull && docker compose up -d
+#
+#   面板：http://<主机IP>:${PANEL_PORT:-18888}/panel/
+services:
+  wb-syan:
+    # 不填 GHCR_IMAGE 时用本地构建出来的镜像
+    image: ${GHCR_IMAGE:-wb-syan:local}
+    build: .
+    container_name: wb-syan
+    restart: unless-stopped
+    # 容器默认以 uid 10001 运行。宿主机挂载目录属主不同会导致
+    # 「写入 auths/*.json.tmp 失败 permission denied」，两种解法：
+    #   1) 在 .env 里把 PUID/PGID 改成 `id -u` / `id -g` 的结果
+    #   2) sudo chown -R 10001:10001 ./auths ./data ./config.json
+    user: "${PUID:-10001}:${PGID:-10001}"
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    ports:
+      # 宿主机 18888 -> 容器 7863（容器内监听端口由 config.json 的 listen 决定）
+      - "${PANEL_PORT:-18888}:7863"
+    volumes:
+      - ./auths:/app/auths
+      - ./data:/app/data
+      # 宿主机必须先有 config.json（cp config.example.json config.json）。
+      # 缺失时 Docker 会把挂载点创建成目录 -> 容器启动失败。
+      # 不能挂 :ro —— 面板「配置」页要写回这个文件（保存后热生效）。
+      - ./config.json:/app/config.json
+    # json-file 日志默认无限增长，按 10MB × 3 轮转
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

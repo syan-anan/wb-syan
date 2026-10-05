@@ -1,0 +1,42 @@
+# ===== 凭据与运行数据（绝对不要提交）=====
+auths/
+data/
+config.json
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+backups/
+*.log
+
+# ===== 本地构建产物（二进制走 CI / GitHub Release）=====
+/login
+/credit
+/wb-syan
+/signin_bin
+/wb-syan.exe
+/login.exe
+/credit.exe
+/server.exe
+
+# ===== 临时与缓存 =====
+*.tmp
+*.zip
+__pycache__/
+.cache/
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.swp
+
+# ===== 内部草稿文档（不公开）=====
+# 注意：不要用 `*.md` 通配 —— internal/prompt/defaultprompt.md 是 go:embed 的源码文件，
+# 被忽略会导致编译失败。
+LOOP.md
+PLAN.md
+SPEC.md
+docs/
+# 本地任务检查点（不入库）
+.l-skill-tasks/
