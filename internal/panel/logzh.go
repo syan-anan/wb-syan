@@ -40,8 +40,8 @@ const (
 	zhModelWidth = 26 // realm 前缀 + 最长模型名
 	zhStatWidth  = 2  // ✅ / ❌（具体状态码在悬停的原文里）
 	zhTTFBWidth  = 11 // 首字 3.3s
-	zhTokWidth   = 12 // 输出 254 字
-	zhRateWidth  = 16 // 吞吐 548.6 字/s（解码速率口径：输出 ÷（总耗时 − 首字））
+	zhTokWidth   = 12 // 输出 254tok
+	zhRateWidth  = 16 // 吞吐 548.6tok/s（解码速率口径：输出 token ÷（总耗时 − 首字））
 	zhTotalWidth = 9  // 共 5.2s
 	zhCrWidth    = 10 // 扣分 0.0000
 )
@@ -98,22 +98,24 @@ func zhDur(s string) string {
 	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
 
-// zhTok 输出字数：usage 缺失（"-"）显示破折号，不写 0。
+// zhTok 输出 token 数：usage 缺失（"-"）显示破折号，不写 0。单位是 token，
+// 不是汉字个数——原文的 tok=254 就是 254 个 token。
 func zhTok(s string) string {
 	if s == "-" || s == "" {
 		return "—"
 	}
-	return s + " 字"
+	return s + "tok"
 }
 
-// zhRate 吞吐列：原文 "48.4tok/s" -> "48.4 字/s"；没有观测（"-"）显示破折号。
+// zhRate 吞吐列：原文 "48.4tok/s" 原样显示——单位就是 tok/s，不译成「字/s」。
 // 数值是解码速率（输出 token ÷（总耗时 − 首字），对齐 DeepSeek Harness 与
 // Artificial Analysis 的 Output Speed），标签沿用「吞吐」——同行的叫法。
+// 没有观测（"-"）显示破折号。
 func zhRate(s string) string {
 	if s == "-" || s == "" {
 		return "—"
 	}
-	return strings.TrimSuffix(s, "tok/s") + " 字/s"
+	return s
 }
 
 // zhCredit 扣费积分："-" 表示没有成本观测，与"观测到 0"（免费模型）区分开。

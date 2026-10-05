@@ -45,7 +45,7 @@ func TestRenderZhChatCols(t *testing.T) {
 	if len(cols) != 9 {
 		t.Fatalf("对话行应拆成 9 列，得到 %d：%q", len(cols), cols)
 	}
-	for i, want := range []string{"对话·流式", "syan-anan", "global:deepseek-v4.1-flash", "✅", "首字 3.3s", "输出 254 字", "吞吐 48.4 字/s", "共 5.2s", "扣分 0.0000"} {
+	for i, want := range []string{"对话·流式", "syan-anan", "global:deepseek-v4.1-flash", "✅", "首字 3.3s", "输出 254tok", "吞吐 48.4tok/s", "共 5.2s", "扣分 0.0000"} {
 		if cols[i] != want {
 			t.Errorf("第 %d 列 = %q，期望 %q", i, cols[i], want)
 		}

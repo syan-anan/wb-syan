@@ -331,7 +331,8 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
      18px 是能一行放下的最大档：1863 宽下最宽的一行实测约 1188px，可用宽度
      1471px，留约 280px 余量（窗口再窄时由 fitPx 截断兜底）。
      状态列用 ✅/❌ 图标只占 2 列，省下来的宽度装回了吞吐列。吞吐是解码速率口径
-     （输出 ÷（总耗时 − 首字）），数值比旧的端到端口径大，列宽按 16 列预留。
+     （输出 token ÷（总耗时 − 首字）），单位沿用行业写法 tok/s，数值比旧的端到端
+     口径大，列宽按 16 列预留。
      行高 1.5 保证同屏行数不至于比 14px/1.7 时少太多。 */
   font: 18px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
 }
