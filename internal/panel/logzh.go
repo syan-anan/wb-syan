@@ -41,7 +41,7 @@ const (
 	zhStatWidth  = 2  // ✅ / ❌（具体状态码在悬停的原文里）
 	zhTTFBWidth  = 11 // 首字 3.3s
 	zhTokWidth   = 12 // 输出 254 字
-	zhRateWidth  = 14 // 吞吐 88.8 字/s
+	zhRateWidth  = 16 // 吞吐 548.6 字/s（解码速率口径：输出 ÷（总耗时 − 首字））
 	zhTotalWidth = 9  // 共 5.2s
 	zhCrWidth    = 10 // 扣分 0.0000
 )
@@ -107,6 +107,8 @@ func zhTok(s string) string {
 }
 
 // zhRate 吞吐列：原文 "48.4tok/s" -> "48.4 字/s"；没有观测（"-"）显示破折号。
+// 数值是解码速率（输出 token ÷（总耗时 − 首字），对齐 DeepSeek Harness 与
+// Artificial Analysis 的 Output Speed），标签沿用「吞吐」——同行的叫法。
 func zhRate(s string) string {
 	if s == "-" || s == "" {
 		return "—"

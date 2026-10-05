@@ -611,7 +611,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// credit/hasCredit 是本次尝试上游回报的实测积分消耗（流式取末帧 usage、
 	// 非流式取聚合 usage）。传进来说明「这次有成本观测」，会随用量桶一起落账，
 	// 支撑用量页按窗口统计「积分已用」；失败分支一律传 0/false。
-	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool) {
+	// ttfb 为本次尝试的首字耗时（非流式 / 未观测到首帧时为 0）。
+	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, ttfb time.Duration, credit float64, hasCredit bool) {
 		delta.Model = peek.Model
 		latency := time.Since(started)
 		latencyMs := latency.Milliseconds()
@@ -620,9 +621,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		delta.HasLatencyMs = true
 		delta.LatencyMs = latencyMs
-		if delta.HasCompletionTokens && delta.CompletionTokens >= 0 && latencyMs > 0 {
-			delta.HasTokensPerSecond = true
-			delta.TokensPerSecond = float64(delta.CompletionTokens) * 1000 / float64(latencyMs)
+		// 吞吐口径见 throughput.go：输出 token ÷ 解码时长（总耗时 − 首字）。
+		// 与日志行的 toks/(total−ttfb) 同源，避免两处各算一套。
+		// 总耗时用钳制后的 latencyMs（≥1ms）：Windows 上 time.Now 的分辨率会让
+		// 瞬时请求测出 0，直接拿原始 latency 会把「有观测」误判成「无观测」。
+		if delta.HasCompletionTokens {
+			if rate, ok := decodeThroughput(delta.CompletionTokens, ttfb, time.Duration(latencyMs)*time.Millisecond); ok {
+				delta.HasTokensPerSecond = true
+				delta.TokensPerSecond = rate
+			}
 		}
 		h.cfg.Pool.RecordTokenUsage(uid, delta)
 
@@ -781,7 +788,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
 			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
 			// 上游 client 已打 transport error 日志。
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, 0, false)
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
 			h.cfg.Pool.NoteFailures(acct.UID)
@@ -792,7 +799,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if status >= 400 {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, 0, false)
 			st.status = status
 			var kind upstream.ErrKind
 			if uerr != nil {
@@ -909,7 +916,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 成本先取再记账：recordAttempt 要把本次实测 credit 一起写进用量桶，
 			// 顺序反了就只能落个「有 token 没成本」的桶。
 			credit, hasCredit := stats.Credit()
-			recordAttempt(acct.UID, stats.Usage(), attemptStarted, credit, hasCredit)
+			// TTFB 从请求进入 handler 起算，latency 从本次尝试起算：算解码时长前
+			// 先归一到同一原点。轮转退避（换号前最多等 8s）不归一的话，TTFB 可能
+			// 大于 latency，速率会被算大。日志列仍用客户端视角的原始 TTFB。
+			ttfb := stats.TTFB()
+			if off := attemptStarted.Sub(st.start); off > 0 {
+				if off >= ttfb {
+					ttfb = 0
+				} else {
+					ttfb -= off
+				}
+			}
+			recordAttempt(acct.UID, stats.Usage(), attemptStarted, ttfb, credit, hasCredit)
 			st.setCredit(credit, hasCredit)
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
@@ -931,7 +949,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		resp, err := upstream.Aggregate(rc)
 		rc.Close()
 		if err != nil {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, 0, false)
 			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			st.status = http.StatusBadGateway
@@ -939,7 +957,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		// 成本先取再记账（同流式分支）：本次实测 credit 随用量桶一起落账。
 		credit, creditTotal, hasCredit := usageCreditTotal(resp)
-		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, credit, hasCredit)
+		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, 0, credit, hasCredit)
 		st.setCredit(credit, hasCredit)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK

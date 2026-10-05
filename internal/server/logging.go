@@ -285,7 +285,7 @@ const (
 	chatAcctWidth = 22
 	chatTTFBWidth = 8
 	chatTokWidth  = 6
-	chatRateWidth = 11 // 形如 "183.6tok/s"
+	chatRateWidth = 11 // 形如 "183.6tok/s"（吞吐口径见 logChatRow）
 	// chatCreditWidth 容纳 4 位小数积分："0.0001"(6) / "12.5000"(7) / "1234.5678"(9)。
 	chatCreditWidth = 9
 )
@@ -297,7 +297,9 @@ const (
 //   - uid/nick：完整 uid 与账号昵称，经 logfmt.Label 拼成 "昵称(uid8)" 展示——只有
 //     uid8 时人眼无法判断是哪个号，要辨认必须再查 auths/，排障多一跳；
 //   - toks<0 表示 usage 缺失，显示 "-"；
-//   - hasCredit=false 表示本次没有成本观测，cr 列显示 "-"（观测到 0 显示 0.0000）。
+//   - hasCredit=false 表示本次没有成本观测，cr 列显示 "-"（观测到 0 显示 0.0000）；
+//   - 吞吐列 = toks ÷ (total − ttfb)（解码速率，首字不进分母）；ttfb 缺失或
+//     >= total 时回落 toks ÷ total。
 func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status int, toks int, credit float64, hasCredit bool) {
 	if !chatLogEnabled {
 		return
@@ -310,8 +312,9 @@ func logChatRow(ttfb, total time.Duration, model, mode, uid, nick string, status
 	tokpsField := "-"
 	if toks >= 0 {
 		tokField = fmt.Sprintf("%d", toks)
-		if total > 0 {
-			tokpsField = fmt.Sprintf("%.1ftok/s", float64(toks)/total.Seconds())
+		// 吞吐口径见 throughput.go：输出 token ÷ 解码时长（总耗时 − 首字）。
+		if rate, ok := decodeThroughput(int64(toks), ttfb, total); ok {
+			tokpsField = fmt.Sprintf("%.1ftok/s", rate)
 		} else {
 			tokpsField = "0.0tok/s"
 		}

@@ -330,7 +330,8 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
   /* 中文表格行按"一行放下"排版（logzh.go 的列宽 + app.js 的 fitPx 截断）。
      18px 是能一行放下的最大档：1863 宽下最宽的一行实测约 1188px，可用宽度
      1471px，留约 280px 余量（窗口再窄时由 fitPx 截断兜底）。
-     状态列用 ✅/❌ 图标只占 2 列，省下来的宽度装回了吞吐列。
+     状态列用 ✅/❌ 图标只占 2 列，省下来的宽度装回了吞吐列。吞吐是解码速率口径
+     （输出 ÷（总耗时 − 首字）），数值比旧的端到端口径大，列宽按 16 列预留。
      行高 1.5 保证同屏行数不至于比 14px/1.7 时少太多。 */
   font: 18px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--ink-2);
 }
@@ -349,7 +350,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
   font-style: normal; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#logBox .lng.c10 { grid-template-columns: 4.4em 5.2em 8.4em 13.4em 2.2em 5.4em 6.9em 8.2em 4.8em 6.9em; }
+#logBox .lng.c10 { grid-template-columns: 4.4em 5.2em 8.4em 13.4em 2.2em 5.4em 6.9em 9.2em 4.8em 6.9em; }
 #logBox .lng.c4  { grid-template-columns: 4.4em 5.2em 8.4em minmax(0, 1fr); }
 
 /* ── 配置表单 ─────────────────────────────────────────────────────── */
