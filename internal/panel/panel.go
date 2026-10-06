@@ -13,6 +13,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -44,6 +45,13 @@ type Config struct {
 	PanelPassword string
 	RedisMode     string // "upstash" / "noop"，仅观测透出
 	Version       string // 面板版本号（展示用）
+
+	// UpdateCheck 在线更新检查：比对 GitHub 上的最新 tag 与 Version，有新版本
+	// 时面板侧栏提示。缺省 false（零值）——main 按 config 的 panel.update_check
+	// 显式打开；测试构造的 Config 不开，所以测试永远不会打网络。
+	UpdateCheck bool
+	// UpdateRepo 检查用的仓库 "owner/name"；空 = syan-anan/wb-syan。
+	UpdateRepo string
 
 	// Live 运行期可变配置（在线改配置立即生效）。
 	Live *livecfg.Holder
@@ -84,6 +92,9 @@ type Panel struct {
 	mux     *http.ServeMux
 	started time.Time
 	logs    *Ring
+
+	// upd 在线更新检查器（见 update.go）；UpdateCheck=false 时只返回 enabled:false。
+	upd *updater
 
 	// logins 进行中的 OAuth 设备授权会话（state → 会话信息）。
 	// poll 成功或超时（loginTTL）后剔除；面板常驻进程，容量天然有界。
@@ -149,6 +160,9 @@ func New(cfg Config) *Panel {
 		logs:    NewRing(500),
 		logins:  map[string]loginSession{},
 	}
+	p.upd = newUpdater(cfg.UpdateCheck, cfg.Version, cfg.UpdateRepo)
+	// 关掉时 run 立刻返回，不起 goroutine、不发请求（离线/内网部署与测试）。
+	go p.upd.run(context.Background())
 	p.routes()
 	return p
 }
@@ -163,6 +177,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/fonts/syan-round.woff2", p.fontAsset)
 	p.mux.HandleFunc("GET /panel/img/syan-logo.webp", p.imgAsset)
 	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
+	p.mux.HandleFunc("GET /panel/api/update", p.withAuth(p.updateStatus))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
@@ -280,6 +295,15 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"in_flight_full":  inFlightFull,
 		"accounts":        p.cfg.Pool.List(),
 	})
+}
+
+// updateStatus 返回在线更新检查的缓存快照（见 update.go）。
+//
+// 只读缓存、永不阻塞：缓存过期就在后台补一次刷新，本次请求照样立刻返回旧值。
+// 关闭了检查（panel.update_check=false）或外网不通时，面板拿到 enabled=false
+// 或空的 latest，什么都不显示——更新提示不该打扰任何人。
+func (p *Panel) updateStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, p.upd.snapshot())
 }
 
 // logsHandler 返回日志环形缓冲快照（时间升序，含频道标记 chat/task/sys）。

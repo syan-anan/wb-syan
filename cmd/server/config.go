@@ -35,6 +35,11 @@ type Config struct {
 
 		// PackageDetailLimit 积分构成页单账号默认展示的最近到期包数；<=0 回落 5。
 		PackageDetailLimit int `json:"package_detail_limit"`
+
+		// UpdateCheck 在线更新检查：比对 GitHub 上的最新 tag 与进程版本，有新版本
+		// 时面板侧栏提示。缺省 true；false = 完全不出网（离线/内网部署），面板不显示
+		// 任何版本提示。检查只读 api.github.com 公开接口，6 小时一次，失败静默。
+		UpdateCheck bool `json:"update_check"`
 	} `json:"panel"`
 
 	Cooldown struct {
@@ -199,6 +204,7 @@ func Default() *Config {
 	c.Cooldown.SoftRate = "600s"
 	c.Cooldown.SoftRateMax = "2h"
 	c.Panel.PackageDetailLimit = 5
+	c.Panel.UpdateCheck = true
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}

@@ -328,6 +328,28 @@ curl -s http://localhost:7863/v1/chat/completions \
   -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}'
 ```
 
+## 🔄 升级与更新提示
+
+面板侧栏底部会在有新版本时出现黄色小胶囊（点开可复制升级命令、跳发布说明）。
+检查由服务端完成：启动 20 秒后一次，之后每 6 小时一次，只读 GitHub 公开接口；
+结果缓存在内存里，面板只读缓存，外网慢不会拖慢页面；断网/内网一律静默，不显示
+任何东西。离线部署可关：`"panel": { "update_check": false }`。
+
+```bash
+# 手动升级（推荐）
+docker compose pull && docker compose up -d
+
+# 升级前备份
+tar czf wb-syan-backup-$(date +%F).tar.gz auths data config.json
+
+# 自动升级（可选，watchtower）：只动带 enable 标签的 wb-syan 容器
+docker compose -f docker-compose.yml -f docker-compose.watchtower.yml up -d
+```
+
+⚠️ watchtower 需要挂 `/var/run/docker.sock`（等于交出宿主机 Docker 控制权），
+会在你不看的时候自动重启容器，升级失败也不会回滚 —— 只在自己的机器上开；
+要稳就用面板提示手动升级。
+
 ## 配置说明
 
 **`config.example.json` 是配置项最完整的参考**：每个字段、默认值与结构都能在其中找到，示例值一律是 `test_key` 之类占位符，**不含任何真实密钥**。下表为字段含义速查。

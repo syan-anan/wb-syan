@@ -525,6 +525,57 @@ async function loadOverview(quiet) {
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
+/* ── 在线更新提示 ─────────────────────────────────────────────────────
+   服务端每 6 小时查一次 GitHub（internal/panel/update.go），这里只读缓存快照
+   /panel/api/update，不产生额外出网请求。没有新版本、关掉了检查、外网不通 ——
+   一律什么都不显示，静默失败：更新提示不该打扰任何人。 */
+let updInfo = null, updTimer = null, updRetry = null;
+
+function closeUpdPop() { $('updPop').hidden = true; }
+
+function renderUpdate(u) {
+  const chip = $('navUpdChip');
+  if (!u || !u.enabled || !u.latest || !u.has_update) {
+    $('navUpdRow').hidden = true;
+    closeUpdPop();
+    return;
+  }
+  chip.textContent = '有新版本 ' + u.latest;
+  chip.title = '当前 v' + u.current + ' → 最新 ' + u.latest + '（点开看升级命令）';
+  $('navUpdRow').hidden = false;
+  $('updLatest').textContent = u.latest;
+  $('updCurrent').textContent = '当前 v' + u.current;
+  if (u.url) $('updLink').href = u.url;
+}
+
+async function loadUpdate() {
+  try {
+    const u = await api('update');
+    updInfo = u;
+    renderUpdate(u);
+    // 服务端启动后 20s 才做首次检查：这轮还没拿到 latest 就 15s 后再问一次。
+    if (u && u.enabled && !u.latest && !updRetry) {
+      updRetry = setTimeout(() => { updRetry = null; loadUpdate(); }, 15000);
+    }
+  } catch (e) { /* 静默：更新检查失败不弹任何东西 */ }
+}
+
+$('navUpdChip').onclick = ev => {
+  ev.stopPropagation();
+  $('updPop').hidden = !$('updPop').hidden;
+};
+$('updCopy').onclick = async ev => {
+  ev.stopPropagation();
+  const ok = await copyText($('updCmd').textContent.trim());
+  toast(ok ? '升级命令已复制' : '复制被浏览器拦截，请手动复制', ok ? 'ok' : 'err');
+};
+document.addEventListener('click', ev => {
+  if ($('updPop').hidden) return;
+  if (ev.target.closest && (ev.target.closest('.updpop') || ev.target.closest('#navUpdChip'))) return;
+  closeUpdPop();
+});
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeUpdPop(); });
+
 $('accSort').value = accSort;
 $('accSort').onchange = () => {
   accSort = $('accSort').value === 'realm' ? 'realm' : 'added';
@@ -1094,6 +1145,10 @@ function refreshVisible() {
 }
 function start() {
   loadOverview(true);
+  loadUpdate();
+  if (updTimer) clearInterval(updTimer);
+  // 30 分钟问一次服务端缓存（不是问 GitHub——出网由服务端 6h 一次自己管）。
+  updTimer = setInterval(loadUpdate, 1800000);
   if (refTimer) clearInterval(refTimer);
   refTimer = setInterval(refreshVisible, 5000);
   // 「x 秒前」每秒自走：与整表 5s 轮询解耦，服务端一次请求都不多发。

@@ -48,6 +48,34 @@ func TestPanelPackageDetailLimit(t *testing.T) {
 	}
 }
 
+// 在线更新检查缺省开、显式 false 能关：老配置（没有该键）解析后必须是 true，
+// 否则升级到本版后所有人默认静默 —— 这是"缺省 true"最容易踩的反向坑。
+func TestPanelUpdateCheckDefault(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !c.Panel.UpdateCheck {
+		t.Error("Default() 的 update_check 应为 true")
+	}
+
+	legacy, err := ParseConfig([]byte(`{"listen":":7863"}`))
+	if err != nil {
+		t.Fatalf("parse legacy config: %v", err)
+	}
+	if !legacy.Panel.UpdateCheck {
+		t.Error("老配置（无 update_check 键）应回落 true")
+	}
+
+	off, err := ParseConfig([]byte(`{"panel":{"update_check":false}}`))
+	if err != nil {
+		t.Fatalf("parse update_check=false: %v", err)
+	}
+	if off.Panel.UpdateCheck {
+		t.Error("显式 update_check=false 应关掉检查")
+	}
+}
+
 func TestLoadFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")

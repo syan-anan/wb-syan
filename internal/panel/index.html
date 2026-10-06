@@ -60,6 +60,40 @@ body {
 .nav a svg { width: 15px; height: 15px; flex: none; opacity: .85; }
 .nav .sig { padding: 12px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); }
 .nav .sig .row { display: flex; align-items: center; gap: 7px; }
+
+/* 在线更新提示：侧栏小胶囊 + 点开的浮层。浮层 fixed 贴侧栏右侧，不受滚动影响
+   （主题层 theme.css 给裸 button 加了 padding/阴影/位移，这里按类名压回去）。 */
+.nav .sig .updchip {
+  padding: 2px 9px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 11.5px; line-height: 1.5; color: var(--warn);
+  background: var(--warn-soft); border: 1px solid var(--line-soft); box-shadow: none;
+  transform: none; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+.nav .sig .updchip:hover:not(:disabled) { transform: none; box-shadow: none; filter: brightness(1.1); }
+.updpop {
+  position: fixed; left: 220px; bottom: 16px; z-index: 60; width: 302px;
+  padding: 12px 13px; background: var(--raise); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); font-size: 12.5px;
+}
+.updpop .hd { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+.updpop .hd .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+.updpop .ver { margin-top: 7px; display: flex; align-items: baseline; gap: 8px; }
+.updpop .ver b { font-family: var(--mono); font-size: 14px; }
+.updpop .ver span { color: var(--ink-3); font-family: var(--mono); font-size: 11.5px; }
+.updpop .cmd { margin-top: 9px; display: flex; align-items: center; gap: 6px; }
+.updpop .cmd code {
+  flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px;
+  border-radius: 7px; background: var(--surface-2); border: 1px solid var(--line-soft);
+  font-family: var(--mono); font-size: 11px;
+}
+.updpop .cmd button {
+  flex: none; padding: 5px 10px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 11.5px;
+  background: var(--accent); color: var(--accent-ink); border: 0; box-shadow: none; transform: none;
+}
+.updpop .cmd button:hover:not(:disabled) { transform: none; box-shadow: none; filter: brightness(1.07); }
+.updpop .ft { margin-top: 9px; }
+.updpop .ft a { color: var(--accent); text-decoration: none; font-size: 11.5px; }
+.updpop .ft a:hover { text-decoration: underline; }
 /* 日志频道筛选 chips */
 .chips { display: inline-flex; gap: 4px; align-items: center; }
 .chips .chip { padding: 2px 10px; border-radius: 999px; }
@@ -584,8 +618,20 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
     <div class="sig">
       <div class="row"><span class="pulse" id="navPulse"></span><span id="navState">连接中</span></div>
       <div class="row" style="margin-top:5px"><span id="navVer">v-</span> · <span id="navRedis">-</span></div>
+      <div class="row" id="navUpdRow" style="margin-top:6px" hidden>
+        <button type="button" class="updchip" id="navUpdChip" aria-haspopup="dialog">有新版本</button>
+      </div>
     </div>
   </nav>
+
+  <!-- 在线更新提示浮层：数据来自 /panel/api/update（服务端 6h 一次的缓存快照）。
+       没有新版本 / 关掉检查 / 外网不通时整块保持隐藏。 -->
+  <div class="updpop" id="updPop" role="dialog" aria-label="发现新版本" hidden>
+    <div class="hd"><span class="dot"></span>发现新版本</div>
+    <div class="ver"><b id="updLatest">v-</b><span id="updCurrent"></span></div>
+    <div class="cmd"><code id="updCmd">docker compose pull &amp;&amp; docker compose up -d</code><button type="button" id="updCopy" title="复制升级命令">复制</button></div>
+    <div class="ft"><a id="updLink" href="#" target="_blank" rel="noopener">查看发布说明 →</a></div>
+  </div>
 
   <div class="main">
     <div class="topbar">

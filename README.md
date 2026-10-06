@@ -104,6 +104,48 @@ docker compose up -d --build
 
 ---
 
+## 🔄 升级与更新提示
+
+### 面板里的「有新版本」提示
+
+侧栏底部（版本号下面）出现黄色小胶囊 = 有新版本。点开能看到当前版本、最新版本、
+一键复制的升级命令，以及发布说明链接。
+
+- 检查频率：服务端启动 20 秒后查一次，之后每 **6 小时**一次；只读 GitHub 的公开接口
+- 结果缓存在服务端内存里，面板只读缓存 —— **外网慢不会拖慢面板**
+- 断网 / 内网 / GitHub 不通：什么都不显示，静默失败，不刷日志
+- 想彻底关掉（离线、内网部署）：`config.json` 里 `"panel": { "update_check": false }`
+
+### 手动升级（推荐）
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+数据都在 `auths/`、`data/`、`config.json` 三个挂载点里，升级不会碰它们。
+升级前想留后路先备份：
+
+```bash
+tar czf wb-syan-backup-$(date +%F).tar.gz auths data config.json
+```
+
+### 自动升级（可选，watchtower）
+
+不想手动升，让 watchtower 每小时帮你检查并自动拉新镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.watchtower.yml up -d
+```
+
+它只动带 `com.centurylinklabs.watchtower.enable` 标签的容器（也就是 wb-syan 自己），
+不会碰你机器上其它服务。**三个前提先读清楚**：
+
+1. watchtower 要挂 `/var/run/docker.sock` —— 等于把宿主机 Docker 的控制权交给它，只在自己的机器上开
+2. 自动升级会在你不看的时候重启容器（想只在凌晨升，见 `docker-compose.watchtower.yml` 里的 `--schedule` 注释）
+3. 升级失败不会自动回滚；要稳就用面板提示手动升
+
+---
+
 ## 🚀 首次使用（3 步）
 
 ### 1. 设置 API Key

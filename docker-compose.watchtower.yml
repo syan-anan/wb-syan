@@ -1,0 +1,31 @@
+# wb-syan · 自动升级覆盖文件（可选，默认不用）
+#
+# 用法（和主 compose 叠着跑，不改主文件一行）：
+#   docker compose -f docker-compose.yml -f docker-compose.watchtower.yml up -d
+#
+# 做了什么：给 wb-syan 打上 watchtower 开关标签，再加一个 watchtower 容器。
+# 它按下面的间隔检查 GHCR 上的镜像，发现新版本就自动拉取并重建 wb-syan。
+#
+# ⚠️ 三个前提，读清楚再开：
+#   1. watchtower 必须挂 /var/run/docker.sock —— 等于把宿主机 Docker 的控制权
+#      交给它。只在你自己的机器上开，别在共享主机上开。
+#   2. 自动升级会在你不看的时候重启容器。想只在凌晨没人用的时候升，把下面
+#      command 里的 --interval 3600 换成 --schedule "0 0 4 * * *"。
+#   3. 升级失败不会自动回滚（旧镜像被 --cleanup 删掉了）。要稳，就用面板侧栏的
+#      「有新版本」提示手动升：docker compose pull && docker compose up -d。
+services:
+  wb-syan:
+    labels:
+      # watchtower --label-enable 只升级带这个标签的容器：你机器上其它服务不受影响。
+      com.centurylinklabs.watchtower.enable: "true"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: wb-syan-watchtower
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # --label-enable 只动带标签的容器 / --cleanup 升级完删旧镜像 / --interval 3600 一小时查一次
+    command: --label-enable --cleanup --interval 3600

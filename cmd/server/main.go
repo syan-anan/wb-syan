@@ -252,6 +252,9 @@ func main() {
 		RedisMode:   redisMode,
 		StickyCount: sessCount,
 		Version:     appVersion,
+		// 在线更新检查（panel.update_check，缺省 true）：只读 GitHub 公开接口，
+		// 面板发现新版本时提示；false = 完全不出网。
+		UpdateCheck: cfg.Panel.UpdateCheck,
 		Live:        live,
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
