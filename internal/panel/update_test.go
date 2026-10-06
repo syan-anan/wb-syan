@@ -174,6 +174,56 @@ func TestUpdaterHTTPErrorKeepsSilent(t *testing.T) {
 	}
 }
 
+// TestPanelUpdateCheckNow 手动检查端点：同步跑一次并把结果返回（绕过缓存）。
+// 关闭检查时不发任何请求，只回 enabled=false。
+func TestPanelUpdateCheckNow(t *testing.T) {
+	srv, hits := updateStub(t, http.StatusOK, "v1.20.0", nil, http.StatusOK)
+	p := New(Config{Version: "1.17.0-panel", APIKey: "k", UpdateCheck: true, UpdateRepo: "o/r"})
+	p.upd.base = srv.URL
+
+	req := httptest.NewRequest("POST", "/panel/api/update/check", nil)
+	req.Header.Set("Authorization", "Bearer k")
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var info updateInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if !info.HasUpdate || info.Latest != "v1.20.0" {
+		t.Fatalf("info=%+v", info)
+	}
+	if n := atomic.LoadInt32(hits); n != 1 {
+		t.Errorf("手动检查应恰好打一次 GitHub：hits=%d", n)
+	}
+
+	// 关闭检查：不发请求、回 enabled=false。
+	srv2, hits2 := updateStub(t, http.StatusOK, "v9.9.9", nil, http.StatusOK)
+	p2 := New(Config{Version: "1.17.0-panel", APIKey: "k", UpdateCheck: false})
+	p2.upd.base = srv2.URL
+	req2 := httptest.NewRequest("POST", "/panel/api/update/check", nil)
+	req2.Header.Set("Authorization", "Bearer k")
+	rec2 := httptest.NewRecorder()
+	p2.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec2.Code)
+	}
+	// 新结构体接收：json.Unmarshal 到非零值是"合并"而不是"替换"，
+	// 复用上面的 info 会把上一轮的 Latest 带过来（同 model_probes_test 的坑）。
+	var off updateInfo
+	if err := json.Unmarshal(rec2.Body.Bytes(), &off); err != nil {
+		t.Fatal(err)
+	}
+	if off.Enabled || off.Latest != "" {
+		t.Fatalf("关闭时不该有结果：%+v", off)
+	}
+	if n := atomic.LoadInt32(hits2); n != 0 {
+		t.Errorf("关闭时不该发请求：hits=%d", n)
+	}
+}
+
 // TestPanelUpdateEndpoint 面板端点：默认（未开启）返回 enabled=false；
 // 开启后返回服务端缓存快照，且带鉴权（未带凭据 401）。
 func TestPanelUpdateEndpoint(t *testing.T) {

@@ -70,6 +70,14 @@ body {
   transform: none; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
 }
 .nav .sig .updchip:hover:not(:disabled) { transform: none; box-shadow: none; filter: brightness(1.1); }
+/* 「检查更新」：常驻的纯文字按钮（版本号那一行下面），点了立刻查一次 GitHub。 */
+.nav .sig .updchk {
+  padding: 0; border: 0; background: none; box-shadow: none; transform: none;
+  font: inherit; font-size: 11.5px; color: var(--ink-3); cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.nav .sig .updchk:hover:not(:disabled) { transform: none; box-shadow: none; color: var(--accent); }
+.nav .sig .updchk:disabled { opacity: .6; cursor: default; }
 .updpop {
   position: fixed; left: 220px; bottom: 16px; z-index: 60; width: 302px;
   padding: 12px 13px; background: var(--raise); color: var(--ink);
@@ -618,8 +626,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
     <div class="sig">
       <div class="row"><span class="pulse" id="navPulse"></span><span id="navState">连接中</span></div>
       <div class="row" style="margin-top:5px"><span id="navVer">v-</span> · <span id="navRedis">-</span></div>
-      <div class="row" id="navUpdRow" style="margin-top:6px" hidden>
-        <button type="button" class="updchip" id="navUpdChip" aria-haspopup="dialog">有新版本</button>
+      <div class="row" id="navUpdRow" style="margin-top:6px">
+        <button type="button" class="updchk" id="navUpdChk" title="立即检查 GitHub 上有没有新版本">检查更新</button>
+        <button type="button" class="updchip" id="navUpdChip" aria-haspopup="dialog" hidden>有新版本</button>
       </div>
     </div>
   </nav>

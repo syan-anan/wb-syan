@@ -98,6 +98,21 @@ func (u *updater) snapshot() updateInfo {
 	return info
 }
 
+// checkNow 同步跑一次检查并返回结果，供面板的「检查更新」按钮使用。
+//
+// 和 snapshot() 的区别：这里等网络（最多 updateTimeout），所以只给手动触发用。
+// 已在刷新中时 refresh 会直接返回，这里返回的就是正在进行的那次之前的旧快照——
+// 按钮端会显示"检查中"，重复点击本来也打不进来。
+func (u *updater) checkNow() updateInfo {
+	if u == nil {
+		return updateInfo{}
+	}
+	if u.enabled {
+		u.refresh()
+	}
+	return u.snapshot()
+}
+
 // refresh 拉一次最新版本并写入缓存。已在刷新中时直接返回（避免并发打 GitHub）。
 func (u *updater) refresh() {
 	if u == nil || !u.enabled {

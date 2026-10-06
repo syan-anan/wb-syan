@@ -30,7 +30,7 @@ const ctx = { $: id => els[id] };
 vm.createContext(ctx);
 vm.runInContext(src.slice(start, end) + '\nthis.renderUpdate = renderUpdate;', ctx);
 const snap = () => ({
-  row: els.navUpdRow.hidden, pop: els.updPop.hidden, chip: els.navUpdChip.textContent,
+  chipHidden: els.navUpdChip.hidden, pop: els.updPop.hidden, chip: els.navUpdChip.textContent,
   title: els.navUpdChip.title, latest: els.updLatest.textContent,
   current: els.updCurrent.textContent, href: els.updLink.href,
 });
@@ -56,7 +56,7 @@ process.stdout.write(JSON.stringify(out));`
 	if err != nil {
 		t.Fatalf("update chip node test failed: %v\n%s", err, out)
 	}
-	const want = `{"new":{"row":false,"pop":false,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"uptodate":{"row":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"disabled":{"row":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"empty":{"row":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"}}`
+	const want = `{"new":{"chipHidden":false,"pop":false,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"uptodate":{"chipHidden":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"disabled":{"chipHidden":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"},"empty":{"chipHidden":true,"pop":true,"chip":"有新版本 v1.18.0","title":"当前 v1.17.0-panel → 最新 v1.18.0（点开看升级命令）","latest":"v1.18.0","current":"当前 v1.17.0-panel","href":"https://example.test/tag"}}`
 	if !bytes.Equal([]byte(strings.TrimSpace(string(out))), []byte(want)) {
 		t.Fatalf("update chip=%s\nwant %s", out, want)
 	}

@@ -536,13 +536,13 @@ function closeUpdPop() { $('updPop').hidden = true; }
 function renderUpdate(u) {
   const chip = $('navUpdChip');
   if (!u || !u.enabled || !u.latest || !u.has_update) {
-    $('navUpdRow').hidden = true;
+    chip.hidden = true;
     closeUpdPop();
     return;
   }
   chip.textContent = '有新版本 ' + u.latest;
   chip.title = '当前 v' + u.current + ' → 最新 ' + u.latest + '（点开看升级命令）';
-  $('navUpdRow').hidden = false;
+  chip.hidden = false;
   $('updLatest').textContent = u.latest;
   $('updCurrent').textContent = '当前 v' + u.current;
   if (u.url) $('updLink').href = u.url;
@@ -575,6 +575,26 @@ document.addEventListener('click', ev => {
   closeUpdPop();
 });
 document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeUpdPop(); });
+
+// 「检查更新」：绕过 6 小时缓存，让服务端立刻查一次 GitHub（同步等，最多 10s）。
+$('navUpdChk').onclick = async ev => {
+  ev.stopPropagation();
+  const b = $('navUpdChk');
+  if (b.disabled) return;
+  b.disabled = true;
+  const old = b.textContent;
+  b.textContent = '检查中…';
+  try {
+    const u = await api('update/check', { method: 'POST' });
+    updInfo = u;
+    renderUpdate(u);
+    if (!u.enabled) toast('更新检查已关闭（config.json 的 panel.update_check）', 'err');
+    else if (!u.latest) toast('没查到版本信息：外网不通，或仓库还没有 Release', 'err');
+    else if (u.has_update) { toast('发现新版本 ' + u.latest, 'ok'); $('updPop').hidden = false; }
+    else toast('已是最新版本 v' + u.current, 'ok');
+  } catch (e) { toast('检查失败：' + e.message, 'err'); }
+  finally { b.disabled = false; b.textContent = old; }
+};
 
 $('accSort').value = accSort;
 $('accSort').onchange = () => {

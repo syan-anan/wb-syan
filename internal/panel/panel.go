@@ -178,6 +178,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/img/syan-logo.webp", p.imgAsset)
 	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
 	p.mux.HandleFunc("GET /panel/api/update", p.withAuth(p.updateStatus))
+	// 手动触发一次检查（面板侧栏「检查更新」按钮）：会等网络，最多 10s。
+	p.mux.HandleFunc("POST /panel/api/update/check", p.withAuth(p.updateCheckNow))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
@@ -304,6 +306,12 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 // 或空的 latest，什么都不显示——更新提示不该打扰任何人。
 func (p *Panel) updateStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p.upd.snapshot())
+}
+
+// updateCheckNow 手动触发一次更新检查并返回结果（同步等网络，最多 10 秒）。
+// 关闭检查（panel.update_check=false）时直接返回 enabled=false，不发请求。
+func (p *Panel) updateCheckNow(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, p.upd.checkNow())
 }
 
 // logsHandler 返回日志环形缓冲快照（时间升序，含频道标记 chat/task/sys）。
