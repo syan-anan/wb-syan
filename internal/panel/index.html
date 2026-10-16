@@ -610,6 +610,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#taskscenter" data-view="taskscenter">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 2.5h10v9H8l-3 3v-3H3z"/><path d="M6 6.5h4M6 9h2.5"/></svg>
         任务中心</a></li>
+      <li><a href="#growth" data-view="growth">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 13.5V6.5M6.5 13.5V2.5M10.5 13.5V9.5M14 13.5V4.5"/></svg>
+        成长中心</a></li>
       <li><a href="#models" data-view="models">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
         模型与档位</a></li>
@@ -726,6 +729,18 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
     </section>
 
     <!-- 模型与档位 -->
+    <section class="view" id="view-growth" hidden>
+      <div class="box">
+        <header><h3>成长中心</h3>
+          <span class="meta" id="grMeta">只读快照｜能量 · 活跃地图 · 热力图 · 宠物图鉴 · 盲盒额度</span>
+          <span class="spacer"></span>
+          <label class="sel-note">账号<select id="grUID"></select></label>
+          <button type="button" id="grReload">刷新</button>
+        </header>
+        <div id="grBody" class="grbody"></div>
+      </div>
+    </section>
+
     <section class="view" id="view-models" hidden>
       <div class="box">
         <header>

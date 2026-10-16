@@ -397,7 +397,7 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', apikeys: '密钥管理', config: '配置', logs: '运行日志' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', apikeys: '密钥管理', config: '配置', logs: '运行日志' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
@@ -410,6 +410,7 @@ function go(v) {
   if (v === 'usage') loadUsage();
   if (v === 'packages') loadPackages();
   if (v === 'taskscenter') reattachQueueView();
+  if (v === 'growth') loadGrowth();
 }
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
@@ -2907,3 +2908,85 @@ $('btnKeyCopy').onclick = async () => {
   toast('自动复制被浏览器拦截，已选中，请按 Ctrl+C', 'err');
 };
 $('btnKeyShowClose').onclick = () => $('keyShowVeil').classList.remove('on');
+
+/* ── 成长中心 ───────────────────────────────────────────────────────
+   只读快照：能量 / 活跃地图 / 热力图 / 宠物图鉴 / 盲盒额度 / 旅行 / 抽奖 / 兑换 / 等级。
+   一期快照 = 10 个上游请求，所以服务端有 TTL 缓存；「刷新」按钮走 refresh=1 强制重拉。 */
+let grDefs = [];
+function grFillAccounts() {
+  const sel = $('grUID');
+  const list = ((overviewData && overviewData.accounts) || []);
+  const cur = sel.value;
+  sel.innerHTML = list.map(a => '<option value="' + esc(a.uid) + '">' +
+    esc(a.nickname || String(a.uid).slice(0, 8)) + (a.realm === 'global' ? '（国际）' : '') +
+    '</option>').join('');
+  if (cur && list.some(a => a.uid === cur)) sel.value = cur;
+  else if (list.length) sel.value = list[0].uid;
+}
+function grKV(obj) {
+  if (!obj || typeof obj !== 'object') return '';
+  const keys = Object.keys(obj);
+  if (!keys.length) return '<span class="grnone">—</span>';
+  return keys.map(k => {
+    const v = obj[k];
+    const text = Array.isArray(v) ? v.join('、') : (v === null || v === undefined || v === '' ? '—' : String(v));
+    return '<span class="grkv"><b>' + esc(k) + '</b>' + esc(text) + '</span>';
+  }).join('');
+}
+function grHeatmap(d) {
+  const cells = ((d && d.cells) || []);
+  if (!cells.length) return '<span class="grnone">—</span>';
+  return '<span class="grheat">' + cells.map(c => {
+    const s = Number(c.score || 0);
+    const cls = s <= 0 ? 'g0' : (s <= 1 ? 'g1' : (s <= 3 ? 'g2' : 'g3'));
+    return '<i class="' + cls + '" title="' + esc((c.date || '') + ' · 活跃度 ' + s) + '"></i>';
+  }).join('') + '</span>';
+}
+function grSection(s) {
+  if (!s) return '';
+  let body = '';
+  if (s.error) {
+    body = '<div class="grerr">' + esc(s.error) + '</div>';
+  } else if (s.name === 'heatmap') {
+    body = grHeatmap(s.data) + grKV(s.data && s.data.today);
+  } else if (s.name === 'buddies') {
+    const list = ((s.data && s.data.buddies) || []);
+    body = list.length
+      ? '<div class="grpets">' + list.map(b => '<span class="grpet' + (b.current_buddy ? ' cur' : '') + '">' +
+          esc(b.name || b.instance_id || '未知') + (b.rarity ? ' · ' + esc(b.rarity) : '') +
+          '</span>').join('') + '</div>'
+      : '<span class="grnone">还没有宠物</span>';
+  } else if (s.name === 'buddy') {
+    const b = s.data && s.data.buddy;
+    body = b ? grKV(b) : '<span class="grnone">还没有宠物</span>';
+  } else {
+    body = grKV(s.data);
+  }
+  return '<section class="grsec"><h4>' + esc(s.label || s.name) + '</h4>' + body + '</section>';
+}
+function renderGrowth(snap, cached) {
+  if (!snap) { $('grBody').innerHTML = '<div class="grnone">没有数据</div>'; return; }
+  const secs = snap.sections || {};
+  const order = grDefs.length ? grDefs : Object.keys(secs).map(n => ({ name: n, label: n }));
+  const cards = order.map(d => grSection(secs[d.name])).join('');
+  $('grBody').innerHTML = cards +
+    '<div class="grfoot">快照时间 ' + esc(snap.updated_at || '-') + (cached ? '（缓存）' : '（刚拉取）') + '</div>';
+  $('grMeta').textContent = '只读快照｜' + (order.length) + ' 段｜' +
+    Object.keys(snap.errors || {}).length + ' 段暂不可用';
+}
+async function loadGrowth(force) {
+  const sel = $('grUID');
+  if (!sel.options.length) grFillAccounts();
+  const uid = sel.value;
+  if (!uid) { $('grBody').innerHTML = '<div class="grnone">先添加账号</div>'; return; }
+  $('grBody').innerHTML = '<div class="grnone">加载中…</div>';
+  try {
+    const d = await api('growth?uid=' + encodeURIComponent(uid) + (force ? '&refresh=1' : ''));
+    grDefs = d.sections || [];
+    renderGrowth(d.snapshot, d.cached);
+  } catch (e) {
+    $('grBody').innerHTML = '<div class="grerr">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+$('grReload').onclick = () => loadGrowth(true);
+$('grUID').onchange = () => loadGrowth(false);

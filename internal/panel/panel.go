@@ -128,6 +128,11 @@ type Panel struct {
 	// 任务中心执行队列（taskcenter.go）。
 	queueOnce sync.Once
 	q         *queueState
+
+	// growthMu/growthCache 成长中心快照缓存（growth.go）：按账号缓存，过期才重拉。
+	// 一屏要打 10 个上游请求，不能每次打开页面都重跑一遍。
+	growthMu    sync.Mutex
+	growthCache map[string]*growthEntry
 }
 
 // tryLockAccount 尝试锁定账号的任务执行；已在执行返回 false。
@@ -171,11 +176,12 @@ func New(cfg Config) *Panel {
 		cfg.RedisMode = "noop"
 	}
 	p := &Panel{
-		cfg:     cfg,
-		mux:     http.NewServeMux(),
-		started: time.Now(),
-		logs:    NewRing(500),
-		logins:  map[string]loginSession{},
+		cfg:         cfg,
+		mux:         http.NewServeMux(),
+		started:     time.Now(),
+		logs:        NewRing(500),
+		logins:      map[string]loginSession{},
+		growthCache: map[string]*growthEntry{},
 	}
 	p.upd = newUpdater(cfg.UpdateCheck, cfg.Version, cfg.UpdateRepo)
 	// 关掉时 run 立刻返回，不起 goroutine、不发请求（离线/内网部署与测试）。
@@ -232,6 +238,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/tasks/run_queue", p.withAuth(p.tasksRunQueue))
 	p.mux.HandleFunc("GET /panel/api/tasks/queue", p.withAuth(p.tasksQueueStatus))
 	p.mux.HandleFunc("GET /panel/api/school/vouchers", p.withAuth(p.schoolVouchers))
+	// 成长中心：只读快照（能量 / 活跃地图 / 热力图 / 宠物图鉴 / 盲盒额度 …）。
+	p.mux.HandleFunc("GET /panel/api/growth", p.withAuth(p.growth))
+	p.mux.HandleFunc("GET /panel/api/growth/overview", p.withAuth(p.growthOverview))
 	p.mux.HandleFunc("POST /panel/api/checkin_all", p.withAuth(p.checkinAll))
 	p.mux.HandleFunc("POST /panel/api/travel_all", p.withAuth(p.travelAll))
 	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))

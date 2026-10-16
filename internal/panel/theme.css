@@ -864,3 +864,22 @@ select:disabled { opacity: .5; }
   .mdsg { width: 3px; }
   .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
+
+/* ── 成长中心（只读快照面板）──────────────────────────────────────── */
+.grbody { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 10px 14px 14px; }
+.grsec { border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.grsec h4 { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); font-weight: 550; }
+.grkv { display: inline-block; margin: 0 12px 6px 0; font-size: 12px; color: var(--ink); }
+.grkv b { color: var(--ink-3); font-weight: 500; margin-right: 5px; }
+.grnone { color: var(--ink-3); font-size: 12px; }
+.grerr { color: var(--bad, #e06c75); font-size: 12px; }
+.grheat { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 6px; }
+.grheat i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.grheat .g0 { background: var(--line-soft); }
+.grheat .g1 { background: var(--accent-soft); }
+.grheat .g2 { background: var(--accent); opacity: .55; }
+.grheat .g3 { background: var(--accent); }
+.grpets { display: flex; flex-wrap: wrap; gap: 6px; }
+.grpet { font-size: 11.5px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-soft); color: var(--ink-2); }
+.grpet.cur { border-color: var(--accent); color: var(--accent); }
+.grfoot { grid-column: 1 / -1; color: var(--ink-3); font-size: 11.5px; }
