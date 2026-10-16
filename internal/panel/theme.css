@@ -823,3 +823,44 @@ select:disabled { opacity: .5; }
 [data-theme="dark"] .sy-combo-menu { background: rgba(28,30,44,.97); box-shadow: 0 16px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08); }
 [data-theme="dark"] .sy-combo-item:hover, [data-theme="dark"] .sy-combo-item.on { background: rgba(255,255,255,.1); }
 [data-theme="dark"] .sy-combo-item::before { border-color: rgba(255,255,255,.30); background-color: rgba(255,255,255,.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+   窄屏可用性（2026-10 修订）：表格在手机上不再横向拖
+
+   问题：.acc 有 min-width:640px、.acc.md 有 700px，且列数 8~9。390px 的机身上
+   表格必然溢出，只能左右拖——用户只能靠缩放浏览器比例才看得全。
+
+   做法（不改 DOM、不写第二套渲染）：
+     1. 窄屏解除强制最小宽度，让表格按容器收缩；
+     2. 隐藏信息密度最低的几列（它们在大屏仍在），把宽度让给核心列；
+     3. 收紧内边距与字号，进一步省宽。
+   注意：这里用 max-width 覆盖上面的 min-width 声明，靠**书写顺序靠后**取胜，
+   所以本块必须放在文件末尾。
+   ═══════════════════════════════════════════════════════════════════════ */
+@media (max-width: 640px) {
+  /* 1) 解除强制最小宽度 */
+  .acc, .acc.md { min-width: 0; }
+
+  /* 2) 账号池：让出「用量」与「最近成功」两列（大屏仍在） */
+  .acc .usage-cell,
+  .acc .ago-cell { display: none; }
+
+  /* 3) 模型与档位：让出「支持的思考档位 / 上下文长度 / 最大输出」三列。
+        可用率列（.mdstat）是这页的核心，保留。 */
+  .acc.md .efs,
+  .acc.md .efs-h,
+  .acc.md th:nth-child(7), .acc.md td:nth-child(7),
+  .acc.md th:nth-child(8), .acc.md td:nth-child(8) { display: none; }
+
+  /* 4) 收紧留白与字号 */
+  .acc th, .acc td { padding: 9px 7px; }
+  .acc.md th, .acc.md td { padding: 7px 6px; }
+  .acc { font-size: 12.5px; }
+  .acc .who { min-width: 84px; max-width: 130px; }
+  .acc.md .mdstat-h { min-width: 0; }
+  .mds { padding: 0 6px; }
+  .mds-wide { min-width: 128px; }
+  .mdsg { width: 3px; }
+  .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}

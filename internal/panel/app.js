@@ -493,6 +493,7 @@ function renderAccounts(list) {
         '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '">签到</button>' +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '">余额</button>' +
         '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>' +
+        '<button class="xs ghost" data-a="compensation" data-u="' + esc(s.uid) + '">领补偿</button>' +
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
         '<button class="xs ghost danger" data-a="remove" data-u="' + esc(s.uid) + '">移除</button>' +
@@ -623,6 +624,9 @@ $('accBody').addEventListener('click', async ev => {
     } else if (a === 'disable') {
       await api('accounts/' + encodeURIComponent(u) + '/disable', { method: 'POST' });
       toast('已禁用', 'ok');
+    } else if (a === 'compensation') {
+      const r = await api('accounts/' + encodeURIComponent(u) + '/compensation/claim', { method: 'POST' });
+      toast(r.reason || '领取完成', r.ok ? 'ok' : 'err');
     } else if (a === 'tasks') {
       openTasks(u);
     } else if (a === 'remove') {

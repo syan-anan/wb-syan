@@ -869,20 +869,39 @@ func TestCooldownSoftForModelParsedUntil(t *testing.T) {
 	}
 }
 
-func TestCooldownSoftForModelCappedBySoftRateMax(t *testing.T) {
-	// 解析时间超出 soft_rate_max → 截断到 soft_rate_max（不无限期拉黑）。
+func TestCooldownSoftForModelAlignsToSoftRateMaxIndependent(t *testing.T) {
+	// 2026-10 修订：**解析时间不再被 soft_rate_max 截短**。
+	// 上游明确给 2h 就锁 2h（只受 7 天极端边界约束），soft_rate_max 只约束
+	// 「上游没给时间」的有界退避。
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
 	p.SetSoftRateMax(10 * time.Minute)
-	reset := time.Now().Add(2 * time.Hour) // 远超过封顶 10m
+	reset := time.Now().Add(2 * time.Hour)
 	before := time.Now()
 	p.CooldownSoftForModel("u1", 600*time.Second, reset, "glm-5.3", "429 rate limit")
 	st, _ := p.Status("u1")
 	if len(st.RateLimitedModels) != 1 {
 		t.Fatalf("want model ledger row: %+v", st.RateLimitedModels)
 	}
-	if st.RateLimitedModels[0].Until.Sub(before) > 10*time.Minute+time.Second {
-		t.Errorf("model until=%v want capped at soft_rate_max=10m", st.RateLimitedModels[0].Until)
+	got := st.RateLimitedModels[0].Until.Sub(before)
+	if got < 2*time.Hour-time.Second || got > 2*time.Hour+time.Second {
+		t.Errorf("model until=%v want ~2h（对齐上游，不被 soft_rate_max=10m 截短）", got)
+	}
+}
+
+func TestCooldownSoftForModelClampsAbsurdResetToCeiling(t *testing.T) {
+	// 极端边界：上游解析出远超 7 天的脏时间 → 钳到 7 天，不把账号钉死。
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	before := time.Now()
+	p.CooldownSoftForModel("u1", 600*time.Second, time.Now().Add(30*24*time.Hour), "glm-5.3", "6004")
+	st, _ := p.Status("u1")
+	if len(st.RateLimitedModels) != 1 {
+		t.Fatalf("want model ledger row: %+v", st.RateLimitedModels)
+	}
+	got := st.RateLimitedModels[0].Until.Sub(before)
+	if got > 7*24*time.Hour+time.Second || got < 7*24*time.Hour-time.Minute {
+		t.Errorf("model until=%v want clamped to 7d ceiling", got)
 	}
 }
 

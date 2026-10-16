@@ -206,6 +206,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))
 	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withAuth(p.keepaliveAll))
 	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
+	// 限时补偿 / 每日权益（官网 web 域，见 compensation.go）
+	p.mux.HandleFunc("GET /panel/api/compensation", p.withAuth(p.compensationStatus))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/compensation/claim", p.withAuth(p.compensationClaim))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
 	p.mux.HandleFunc("GET /panel/api/model_stats", p.withAuth(p.modelStats))
