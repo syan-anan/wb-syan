@@ -311,6 +311,40 @@ curl -X POST http://127.0.0.1:18888/v1/messages \
 - `stream: true` 返回标准 Anthropic SSE 事件序列（`message_start` → `content_block_*` → `message_delta` → `message_stop`）
 - 出错时返回 Anthropic 形状的错误体（`{"type":"error","error":{"type":...,"message":...}}`），上游原文保留在 `message` 里
 
+### 加密凭证（.info）导入 / 导出
+
+新版客户端导出的 `.info` 里，`accessToken` / `refreshToken` / 手机号 / 昵称等字段是
+`$wbEncrypted` 信封（AES-256-GCM）。网关要收这种文件，得先有解密密钥——服务端没有
+客户端安装目录，取不到客户端自带的 at-rest secret，因此由运维提供一份 key 文件：
+
+```bash
+# credential-key.json（与服务端同机的私有文件，建议 chmod 600）
+# {"keyId": "<sha256(key) 前 16 位十六进制>", "key": "<32 字节 key 的 base64>"}
+export WB2A_CREDENTIAL_KEY_FILE=/root/workbuddy2api/credential-key.json
+# 也兼容参考实现的 WORKBUDDY_CREDENTIAL_KEY_FILE
+```
+
+配好之后（或在 `config.json` 里写 `"credential_key_file": "..."`）：
+
+```bash
+# 导入：.info 单文件，或 .jsonl 每行一个凭证
+curl -X POST http://127.0.0.1:18888/panel/api/import/info \
+  -H "Authorization: Bearer 面板密码" -F "file=@workbuddy-xxx.info"
+# 也可以直接把内容放进 body
+curl -X POST http://127.0.0.1:18888/panel/api/import/info \
+  -H "Authorization: Bearer 面板密码" --data-binary @workbuddy-xxx.info
+
+# 导出：把当前生效的凭证封成 .info（每个字段独立 nonce，每次导出密文都不同）
+curl -X POST http://127.0.0.1:18888/panel/api/accounts/<uid>/export \
+  -H "Authorization: Bearer 面板密码" -o workbuddy-<uid>.info
+```
+
+两点口径：
+
+- **没配密钥也能用**：明文 `.info` 照常导入；遇到信封时会明确告诉你「未配置凭证解密密钥」
+  并指出该配哪个字段，而不是含糊地报「格式错误」
+- **导出必须加密**：没配密钥时导出直接拒绝——把明文 token 换成一个更像"文件"的形式交出去，
+  比不导出更危险
 ### 接到常见客户端
 
 | 客户端 | 填法 |

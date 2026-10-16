@@ -73,6 +73,11 @@ type Config struct {
 	// 与 server.Config.KeyQuota 是同一个实例（进程内单例）。
 	KeyQuota *keys.Quota
 
+	// CredentialKeyFile 客户端加密凭证（.info）的解密密钥文件路径（可选）。
+	// 空 = 不支持加密 .info（明文导入不受影响）。格式见 internal/credential：
+	// {"keyId": "<sha256(key) 前 16 位十六进制>", "key": "<32 字节 key 的 base64>"}。
+	CredentialKeyFile string
+
 	// StickyCount 返回粘性会话绑定数；nil 时报告 0。
 	StickyCount func() int
 
@@ -186,6 +191,10 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
 	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importCockpit))
+	// 加密凭证（.info / .jsonl）导入与导出：需要运维配置 credential_key_file 才能
+	// 处理加密字段；明文 .info 与未配密钥时的报错口径见 credential.go。
+	p.mux.HandleFunc("POST /panel/api/import/info", p.withAuth(p.importInfo))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/export", p.withAuth(p.exportCredential))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withAuth(p.accountRevive))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withAuth(p.accountDisable))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))

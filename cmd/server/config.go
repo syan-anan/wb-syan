@@ -140,6 +140,11 @@ type Config struct {
 	// PromptText 解析后的系统提示词文本（custom/append 模式使用）。
 	PromptText string `json:"-"`
 
+	// CredentialKeyFile 客户端加密凭证（.info）的解密密钥文件路径；空 = 不支持
+	// 加密 .info（明文导入不受影响）。格式见 internal/credential。
+	// 环境变量：WB2A_CREDENTIAL_KEY_FILE，或参考实现的 WORKBUDDY_CREDENTIAL_KEY_FILE。
+	CredentialKeyFile string `json:"credential_key_file"`
+
 	Upstash struct {
 		URL   string `json:"url"`   // 空 = 纯内存模式；支持完整 rediss:// URL 或 https://xxx.upstash.io host
 		Token string `json:"token"` // url 非完整连接串时用于组装 rediss://default:<token>@<host>:6379
@@ -400,6 +405,13 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_PROMPT_FILE"); v != "" {
 		c.Prompt.File = v
+	}
+	// 凭证解密密钥文件：本项目的 WB2A_ 前缀优先，并兼容参考实现的
+	// WORKBUDDY_CREDENTIAL_KEY_FILE（从参考项目迁移过来时无需改环境变量）。
+	if v := os.Getenv("WB2A_CREDENTIAL_KEY_FILE"); v != "" {
+		c.CredentialKeyFile = v
+	} else if v := os.Getenv("WORKBUDDY_CREDENTIAL_KEY_FILE"); v != "" {
+		c.CredentialKeyFile = v
 	}
 	if v := os.Getenv("WB2A_EXPIRING_SOON"); v != "" {
 		c.Pool.ExpiringSoon = v

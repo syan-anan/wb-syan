@@ -285,6 +285,8 @@ func main() {
 		},
 		// 密钥管理页的配额用量展示与「重置计数」。
 		KeyQuota: keyQuota,
+		// 客户端加密凭证（.info）解密密钥文件；空 = 只支持明文导入。
+		CredentialKeyFile: cfg.CredentialKeyFile,
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
