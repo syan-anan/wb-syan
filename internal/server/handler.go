@@ -136,6 +136,12 @@ func NewHandler(cfg Config) *Handler {
 	// Anthropic Messages 兼容入口：请求翻成 Chat 后交给同一条 chatCompletions
 	// 状态机，响应侧由 anthropicWriter 翻回 Anthropic 形态（见 messages.go）。
 	h.mux.HandleFunc("POST /v1/messages", h.withAuthAnthropic(h.messages))
+	// OpenAI Responses 兼容入口（Codex CLI 等）：请求投影成 Chat 后交给同一条
+	// chatCompletions，响应侧由 responsesWriter 翻回 Responses 形态（见 responses.go）。
+	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
+	// 同一入口的别名：客户端把 base_url 配到 host 根（或前面还有一层吞掉 /v1 的反代）
+	// 时打的是 /responses，多挂一个省掉一轮"到底是哪个路径"的排查。
+	h.mux.HandleFunc("POST /responses", h.withAuth(h.responses))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)

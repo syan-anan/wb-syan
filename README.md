@@ -345,6 +345,29 @@ curl -X POST http://127.0.0.1:18888/panel/api/accounts/<uid>/export \
   并指出该配哪个字段，而不是含糊地报「格式错误」
 - **导出必须加密**：没配密钥时导出直接拒绝——把明文 token 换成一个更像"文件"的形式交出去，
   比不导出更危险
+### Responses 兼容端点（Codex CLI 等）
+
+网关同时暴露 `POST /v1/responses`（另有同入口别名 `POST /responses`）。请求会先**投影**成 Chat 形态：
+`instructions` → 置顶 system 消息；`input` 数组按项落位（`message` / `function_call` 合并进同一条
+assistant 消息 / `function_call_output` → `role:tool`）；`tools` 从 Responses 的扁平行改成 Chat 嵌套行；
+`reasoning:{effort}` → 扁平 `reasoning_effort`；`max_output_tokens` → `max_tokens`。之后走的就是同一条
+转发链路（选号 / 粘性 / 轮转 / 降级 / 用量记账与另外两个端点完全一致）。
+
+```bash
+curl -X POST http://127.0.0.1:18888/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 你的APIKEY" \
+  -d '{"model":"glm-5.2","input":"hi","max_output_tokens":64}'
+```
+
+事件契约（改之前先读一遍）：本层只发 Responses 规范的**必需事件子集** ——
+`response.created` / `response.output_item.added|done` / `response.output_text.delta` /
+`response.reasoning_summary_part.added|done` / `response.reasoning_summary_text.delta` /
+`response.function_call_arguments.delta` / `response.completed|incomplete|failed`。
+`response.in_progress`、`response.content_part.*`、`*.done` 属于可选扩展，并非所有客户端都实现，
+发了会被严格校验的客户端判非法 —— 而校验不通过时客户端是**逐条丢弃**该事件、不报错，
+表现为"思考完就断、没有正文"。同理 `response.output_text.delta` 的 `item_id`、
+`response.completed.response.usage` 都是必填，本层保证字段齐全（上游不吐 usage 时补零）。
 ### 接到常见客户端
 
 | 客户端 | 填法 |
@@ -353,6 +376,7 @@ curl -X POST http://127.0.0.1:18888/panel/api/accounts/<uid>/export \
 | OpenAI SDK (Python) | `OpenAI(base_url="http://<IP>:18888/v1", api_key="...")` |
 | Cline / Roo Code | Provider 选 OpenAI Compatible，Base URL 同上 |
 | Claude Code 类工具 | `ANTHROPIC_BASE_URL=http://<IP>:18888`（不用带 `/v1`），key 走 `ANTHROPIC_API_KEY`，模型填 `GET /v1/models` 里的名字 |
+| Codex CLI / Responses 兼容客户端 | `base_url` 指向 `http://<IP>:18888/v1`（网关也接受根路径下的 `/responses`），key 走常规 Bearer，模型同样取 `GET /v1/models` |
 
 ---
 
