@@ -207,6 +207,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withAuth(p.keepaliveAll))
 	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
 	// 限时补偿 / 每日权益（官网 web 域，见 compensation.go）
+	// 模型繁忙度 / 延迟抖动（见 modelbusy.go）
+	p.mux.HandleFunc("GET /panel/api/model_busy", p.withAuth(p.modelBusy))
+	p.mux.HandleFunc("GET /panel/api/model_latency_jitter", p.withAuth(p.modelLatencyJitter))
 	p.mux.HandleFunc("GET /panel/api/compensation", p.withAuth(p.compensationStatus))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/compensation/claim", p.withAuth(p.compensationClaim))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
@@ -655,23 +658,41 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 	nicks := map[string]string{}
 	var creditPoolTotal int64
 	creditByAcct := map[string]int64{}
+	// 口径漂移修复（2026-10）：已禁用账号的额度是**最后一次成功刷新时的陈旧值**
+	// （登录失效后不再刷新），把它算进「账号池累计消耗」会让顶部卡片与积分构成页
+	// 对不上——同一块屏上两个数。现在只把**启用中**的账号计入主口径，
+	// 禁用那部分单独透出（disabled_credits_used / disabled_accounts），
+	// 既不污染「可用」，也不至于让数据看起来丢了。
+	var disabledCreditsUsed int64
+	var disabledAccounts int
 	for _, s := range p.cfg.Pool.List() {
 		if s.Nickname != "" {
 			nicks[s.UID] = s.Nickname
 		}
 		// CreditsTotal == 0 表示额度未知（旧 state / 查询失败），此时不猜、不计入。
-		if s.CreditsTotal > s.Credits {
-			used := s.CreditsTotal - s.Credits
-			creditPoolTotal += used
-			creditByAcct[s.UID] = used
+		if s.CreditsTotal <= s.Credits {
+			if s.Disabled {
+				disabledAccounts++
+			}
+			continue
 		}
+		used := s.CreditsTotal - s.Credits
+		if s.Disabled {
+			disabledCreditsUsed += used
+			disabledAccounts++
+			continue
+		}
+		creditPoolTotal += used
+		creditByAcct[s.UID] = used
 	}
 	snap := p.cfg.Usage.Snapshot(hours, nicks)
 	writeJSON(w, http.StatusOK, usageResponse{
-		Snapshot:            snap,
-		CreditUsedTotal:     snap.Totals.Credits,
-		CreditUsedPoolTotal: creditPoolTotal,
-		CreditUsedByAccount: creditByAcct,
+		Snapshot:             snap,
+		CreditUsedTotal:      snap.Totals.Credits,
+		CreditUsedPoolTotal:  creditPoolTotal,
+		CreditUsedByAccount:  creditByAcct,
+		DisabledCreditsUsed:  disabledCreditsUsed,
+		DisabledAccountCount: disabledAccounts,
 	})
 }
 
@@ -708,6 +729,10 @@ type usageResponse struct {
 	CreditUsedTotal float64 `json:"credit_used_total"`
 	// CreditUsedPoolTotal 账号池累计口径（Σ 套餐总额度 − 剩余），不随窗口变化。
 	CreditUsedPoolTotal int64 `json:"credit_used_pool_total"`
+	// DisabledCreditsUsed 已禁用账号上的历史消耗（**不计入**主口径），单独透出供界面标注。
+	DisabledCreditsUsed int64 `json:"disabled_credits_used"`
+	// DisabledAccountCount 被排除出主口径的禁用账号数。
+	DisabledAccountCount int `json:"disabled_account_count"`
 	// CreditUsedByAccount 同一累计口径的逐账号拆分（uid → 已用积分）。只含额度
 	// 已知的账号；额度未知（CreditsTotal=0）的账号不出现，前端显示「—」。
 	CreditUsedByAccount map[string]int64 `json:"credit_used_by_account"`
