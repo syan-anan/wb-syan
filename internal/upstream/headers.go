@@ -37,6 +37,13 @@ func originRefererFor(a *auth.Auth) string {
 // clientVersion 生效的 WorkBuddy 客户端版本：Client.ClientVersion 非空则取之，
 // 否则内置默认 defaultClientVersion。
 func (c *Client) clientVersion() string {
+	// 客户端参数档案优先：它把 UA / X-IDE-Version / 桌面指纹的版本号收敛到同一处，
+	// 避免三处各报一个版本（那本身就是一个可识别的差异）。
+	if c != nil && c.Profile != nil {
+		if v := strings.TrimSpace(c.Profile.Effective().DesktopVersion); v != "" {
+			return v
+		}
+	}
 	if c != nil && c.ClientVersion != "" {
 		return c.ClientVersion
 	}
@@ -45,6 +52,11 @@ func (c *Client) clientVersion() string {
 
 // cliVersion 生效的 CLI 版本：Client.CliVersion 非空则取之，否则内置默认 defaultCliVersion。
 func (c *Client) cliVersion() string {
+	if c != nil && c.Profile != nil {
+		if v := strings.TrimSpace(c.Profile.Effective().CLIVersion); v != "" {
+			return v
+		}
+	}
 	if c != nil && c.CliVersion != "" {
 		return c.CliVersion
 	}
@@ -78,6 +90,11 @@ func (c *Client) defaultWorkBuddyUA() string {
 func (c *Client) userAgent(a *auth.Auth) string {
 	if c != nil && c.UserAgent != "" {
 		return c.UserAgent
+	}
+	// 客户端参数档案优先：平台段按账号域切换（CN 与产品名同值、国际版 `WorkBuddy AI`），
+	// 版本号取档案生效值 —— 与 X-IDE-Version 同源，不会出现两处报不同版本。
+	if c != nil && c.Profile != nil {
+		return c.Profile.Effective().UAByRealm(a != nil && a.IsGlobal())
 	}
 	return c.defaultWorkBuddyUAFor(a)
 }
@@ -334,6 +351,17 @@ func (c *Client) injectAttribution(req *http.Request) {
 		return
 	}
 	req.Header.Set("X-Agent-Purpose", "conversation")
+	// 客户端参数档案优先：四个归属头 + 合并进来的额外风控头（X-Private-Data /
+	// Accept-Language 等官方必带头）。归属头优先级高于额外头 —— 后者不能把
+	// X-IDE-Name 改成风控头的值（见 clientprofile.RiskHeaders）。
+	if c != nil && c.Profile != nil {
+		for k, v := range c.Profile.Effective().RiskHeaders() {
+			if v != "" {
+				req.Header.Set(k, v)
+			}
+		}
+		return
+	}
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
 	req.Header.Set("X-IDE-Version", c.clientVersion())

@@ -145,6 +145,13 @@ type Config struct {
 	// 环境变量：WB2A_CREDENTIAL_KEY_FILE，或参考实现的 WORKBUDDY_CREDENTIAL_KEY_FILE。
 	CredentialKeyFile string `json:"credential_key_file"`
 
+	// ClientProfile 客户端参数档案（UA / 版本号 / 风控头 / 桌面指纹）。空 = 全部走内置兜底。
+	// 单项也能用环境变量覆盖（WB2A_DESKTOP_VERSION 等，见 internal/clientprofile）。
+	ClientProfile map[string]any `json:"client_profile"`
+	// ClientProfileSource 档案模式："auto"（现场探测优先）或 "saved"（保存值优先）；
+	// 空/非法一律回落 auto。详见 internal/clientprofile 的文件头。
+	ClientProfileSource string `json:"client_profile_source"`
+
 	Upstash struct {
 		URL   string `json:"url"`   // 空 = 纯内存模式；支持完整 rediss:// URL 或 https://xxx.upstash.io host
 		Token string `json:"token"` // url 非完整连接串时用于组装 rediss://default:<token>@<host>:6379
@@ -412,6 +419,10 @@ func applyEnv(c *Config) {
 		c.CredentialKeyFile = v
 	} else if v := os.Getenv("WORKBUDDY_CREDENTIAL_KEY_FILE"); v != "" {
 		c.CredentialKeyFile = v
+	}
+	// 档案模式（单项参数各自有环境变量，见 clientprofile.EnvFor）。
+	if v := os.Getenv("WB2A_CLIENT_PROFILE_SOURCE"); v != "" {
+		c.ClientProfileSource = v
 	}
 	if v := os.Getenv("WB2A_EXPIRING_SOON"); v != "" {
 		c.Pool.ExpiringSoon = v

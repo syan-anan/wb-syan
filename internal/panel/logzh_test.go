@@ -30,7 +30,7 @@ func srEm(s string) float64 {
 // 第一项是时间列（面板渲染时补的 HH:MM:SS）。
 var zhColCaps = []float64{4.4, 5.2, 8.4, 13.4, 2.2, 5.4, 6.9, 8.2, 4.8, 6.9}
 
-const zhGapEm = 0.55 // 列间距
+const zhGapEm = 0.55        // 列间距
 const zhLineBudgetEm = 81.7 // 1863 窗口下日志区可用 1471px ÷ 18px
 
 // TestRenderZhChatCols 锁死对话行的中文列：成功/失败两条都要能读出账号、模型、

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/clientprofile"
 	"github.com/syan-anan/wb-syan/internal/logfmt"
 )
 
@@ -636,6 +637,12 @@ type Client struct {
 
 	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（官方内置 CLI 2.137.1）。
 	CliVersion string
+
+	// Profile 客户端参数档案（可选；nil = 走上面那些零散字段的既有逻辑）。
+	// 非 nil 时它接管 UA / X-IDE-Version / 归属与风控头：三处版本号收敛到档案一处，
+	// 不会出现「UA 报一个版本、归因头报另一个」（那本身就是可识别的差异）。
+	// 见 internal/clientprofile。
+	Profile *clientprofile.Holder
 
 	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
 	// 空 = 旧行为：X-Product="SaaS"，不设 X-IDE-*（向后兼容，不突变归因）。

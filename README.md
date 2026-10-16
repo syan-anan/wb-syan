@@ -368,6 +368,53 @@ curl -X POST http://127.0.0.1:18888/v1/responses \
 发了会被严格校验的客户端判非法 —— 而校验不通过时客户端是**逐条丢弃**该事件、不报错，
 表现为"思考完就断、没有正文"。同理 `response.output_text.delta` 的 `item_id`、
 `response.completed.response.usage` 都是必填，本层保证字段齐全（上游不吐 usage 时补零）。
+### 客户端参数档案（UA / 版本号 / 风控头 / 指纹）
+
+出站请求的「像不像官方客户端」由一份档案统一决定，三层合成、优先级从低到高：
+
+**内置兜底 → 现场探测或后台保存 → 环境变量**。`client_profile_source` 决定中间那层的取法：
+
+`auto`（探测优先，跟着客户端版本自动走）/ `saved`（保存优先，锁死在后台配置的那一份）。
+
+网关通常跑在服务器/容器里、没有客户端安装目录可读，**现场探测恒为空是预期结果**，
+
+实际生效值来自「保存 + 环境变量」。
+
+```bash
+# 看当前生效档案 + 每个键取自哪一层（排障时最有用的一屏）
+curl http://127.0.0.1:18888/panel/api/client_profile -H "Authorization: Bearer 面板密码"
+
+# 保存（默认与已有值合并；只改一个字段不用重发整份）
+curl -X POST http://127.0.0.1:18888/panel/api/client_profile \
+  -H "Authorization: Bearer 面板密码" -H "Content-Type: application/json" \
+  -d '{"profile":{"desktop_version":"5.5.6"},"source":"saved"}'
+
+# 重置回「纯兜底 + 环境变量」
+curl -X POST http://127.0.0.1:18888/panel/api/client_profile/reset -H "Authorization: Bearer 面板密码"
+```
+
+三条硬规则（都是踩坑换来的）：
+
+- **UA 不落盘、始终现拼**：它由 `desktop_version` + `cli_version` + 产品名决定，存下来必然出现
+  「同步过一次 UA 之后，版本号再变而 UA 不变」的陈旧陷阱。要整条覆盖 UA 只有 `WB2A_USER_AGENT`
+  一个入口（保存 `user_agent` 会被明确拒绝并说明原因）
+- **headers 逐层合并**：后台只改 `Accept-Language` 时，其余默认风控头（`X-CodeBuddy-Request`、
+  `X-Requested-With`、`X-Private-Data`）必须还在；四个归属头（`X-IDE-Name/Type/Version`、`X-Product`）
+  优先级高于额外头，不能被它们覆盖
+- **版本号三处同源**：UA、`X-IDE-Version`、桌面指纹里的 `ideVersion`/`extVersion` 一律取档案里的
+  `desktop_version`，不会出现「UA 报一个版本、归因头报另一个」
+
+单项也能用环境变量覆盖（`WB2A_DESKTOP_VERSION`、`WB2A_CLI_VERSION`、`WB2A_CPU_CORES` …，
+
+同时兼容参考实现的 `WORKBUDDY_` 前缀）。环境变量永远最高优先级，是运维的逃生门。
+
+两点值得说明的取值：
+
+- `desktop_version` 默认 **5.5.4**（本项目线上现行值）。参考实现默认 5.5.6 —— 没跟，因为改版本号
+  等于做一次未经验证的指纹变更；要跟就在面板/环境变量里改
+- `X-Product` 默认 **WorkBuddy**。参考实现实测官方取的是部署形态 `SaaS`（`deploymentType`），
+  填产品名是官方从不发的值；同样因为「换值属于指纹变更」而保持现行值。要按参考实现取法，
+  把档案里的 `product` 改成 `SaaS` 即可
 ### 接到常见客户端
 
 | 客户端 | 填法 |

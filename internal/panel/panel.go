@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/syan-anan/wb-syan/internal/clientprofile"
 	"github.com/syan-anan/wb-syan/internal/httpauth"
 	"github.com/syan-anan/wb-syan/internal/keys"
 	"github.com/syan-anan/wb-syan/internal/livecfg"
@@ -77,6 +78,13 @@ type Config struct {
 	// 空 = 不支持加密 .info（明文导入不受影响）。格式见 internal/credential：
 	// {"keyId": "<sha256(key) 前 16 位十六进制>", "key": "<32 字节 key 的 base64>"}。
 	CredentialKeyFile string
+
+	// ClientProfile 客户端参数档案持有者（与出站请求共用同一实例，保证面板改完立即生效）。
+	// nil = 面板只展示内置兜底。
+	ClientProfile *clientprofile.Holder
+	// SaveClientProfile 持久化档案（写回 config.json 的 client_profile + 热更新持有者）。
+	// nil 时保存/重置接口返回 501（只读展示）。
+	SaveClientProfile func(profile map[string]any, source string) error
 
 	// StickyCount 返回粘性会话绑定数；nil 时报告 0。
 	StickyCount func() int
@@ -195,6 +203,11 @@ func (p *Panel) routes() {
 	// 处理加密字段；明文 .info 与未配密钥时的报错口径见 credential.go。
 	p.mux.HandleFunc("POST /panel/api/import/info", p.withAuth(p.importInfo))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/export", p.withAuth(p.exportCredential))
+	// 客户端参数档案：UA / 版本号 / 风控头 / 桌面指纹的一处配置 + 来源排障视图。
+	p.mux.HandleFunc("GET /panel/api/client_profile", p.withAuth(p.getClientProfile))
+	p.mux.HandleFunc("POST /panel/api/client_profile", p.withAuth(p.saveClientProfile))
+	p.mux.HandleFunc("POST /panel/api/client_profile/reset", p.withAuth(p.resetClientProfile))
+	p.mux.HandleFunc("POST /panel/api/client_profile/detect", p.withAuth(p.detectClientProfile))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withAuth(p.accountRevive))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withAuth(p.accountDisable))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))

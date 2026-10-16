@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/clientprofile"
 	"github.com/syan-anan/wb-syan/internal/keys"
 	"github.com/syan-anan/wb-syan/internal/livecfg"
 	"github.com/syan-anan/wb-syan/internal/panel"
@@ -132,6 +133,14 @@ func main() {
 	}
 
 	up := upstream.New()
+	// 客户端参数档案：出站 UA / 版本号 / 风控头 / 桌面指纹收敛到一处（见
+	// internal/clientprofile）。装配后 up 的版本与归属头全部取自档案生效值，
+	// 不再各报一个版本；面板与它共用同一实例，改完下一个请求即生效。
+	profileHolder := clientprofile.NewHolder()
+	profileHolder.Set(cfg.ClientProfile, cfg.ClientProfileSource)
+	up.Profile = profileHolder
+	log.Printf("客户端参数档案已接线：desktop=%s cli=%s 模式=%s（来源见面板「客户端参数」）",
+		profileHolder.Effective().DesktopVersion, profileHolder.Effective().CLIVersion, profileHolder.Source())
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。
@@ -287,6 +296,11 @@ func main() {
 		KeyQuota: keyQuota,
 		// 客户端加密凭证（.info）解密密钥文件；空 = 只支持明文导入。
 		CredentialKeyFile: cfg.CredentialKeyFile,
+		// 客户端参数档案：面板展示 + 编辑（与出站请求共用同一持有者）。
+		ClientProfile: profileHolder,
+		SaveClientProfile: func(profile map[string]any, source string) error {
+			return saveClientProfile(profile, source, *cfgPath, profileHolder)
+		},
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
@@ -391,6 +405,11 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	newCfg, err := ParseConfig(mergedJSON(merged))
 	if err != nil {
 		return nil, err
+	}
+	// 客户端参数档案热生效：配置页改 client_profile / client_profile_source 后，
+	// 下一个出站请求就用新值（与专用接口同一条路径，避免两个入口行为不一致）。
+	if up != nil && up.Profile != nil {
+		up.Profile.Set(newCfg.ClientProfile, newCfg.ClientProfileSource)
 	}
 
 	// 3) 落盘（原子替换）。
@@ -543,6 +562,41 @@ func nonNilStrings(in []string) []string {
 		return []string{}
 	}
 	return in
+}
+
+// saveClientProfile 把客户端参数档案写回 config.json（client_profile /
+// client_profile_source），并热更新运行期持有者 —— 下一个出站请求即生效，无需重启。
+//
+// 与 saveKeys 同套路：读现有 JSON → 只覆盖自己那两个键 → 原子替换。保留用户手写的
+// 其余键，不做整份重写。
+func saveClientProfile(profile map[string]any, source string, path string, holder *clientprofile.Holder) error {
+	if source != clientprofile.SourceSaved {
+		source = clientprofile.SourceAuto
+	}
+	clean, _ := clientprofile.Normalize(profile)
+
+	oldRaw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	var cur map[string]any
+	if err := json.Unmarshal(oldRaw, &cur); err != nil || cur == nil {
+		cur = map[string]any{}
+	}
+	cur["client_profile"] = clean
+	cur["client_profile_source"] = source
+	out, err := json.MarshalIndent(cur, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := writeConfigAtomic(path, out); err != nil {
+		return err
+	}
+	if holder != nil {
+		holder.Set(clean, source)
+	}
+	log.Printf("客户端参数档案已保存（%d 个键，模式 %s）", len(clean), source)
+	return nil
 }
 
 // writeConfigAtomic 原子替换配置文件：先写同目录 tmp 再 rename；单文件 bind mount

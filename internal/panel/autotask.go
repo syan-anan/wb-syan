@@ -680,7 +680,7 @@ func (p *Panel) accountTaskAuto(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "claimed": true, "credit": credit, "energy": energy,
-			"message": growthRewardMessage(credit, energy),
+			"message":         growthRewardMessage(credit, energy),
 			"progress_before": taskProgressText(before), "progress_after": taskProgressText(before),
 			"verify_supported": true,
 		})
