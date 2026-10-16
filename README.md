@@ -415,6 +415,54 @@ curl -X POST http://127.0.0.1:18888/panel/api/client_profile/reset -H "Authoriza
 - `X-Product` 默认 **WorkBuddy**。参考实现实测官方取的是部署形态 `SaaS`（`deploymentType`），
   填产品名是官方从不发的值；同样因为「换值属于指纹变更」而保持现行值。要按参考实现取法，
   把档案里的 `product` 改成 `SaaS` 即可
+### 手机号登录（+86 / +852 / +853）
+
+除了浏览器授权登录，还可以直接用手机号 + 短信验证码把账号加进池子（面板「添加账号」里选手机号登录，
+
+或直接打接口）：
+
+```bash
+# 1) 建会话（会真的打上游 5 个请求，但不发短信，对用户是"瞬时"的）
+curl -X POST http://127.0.0.1:18888/panel/api/login/phone/start -H "Authorization: Bearer 面板密码"
+#    -> {"ok":true,"sid":"...","countries":[{"code":"86",...},{"code":"852",...},{"code":"853",...}]}
+
+# 2) 发验证码
+curl -X POST http://127.0.0.1:18888/panel/api/login/phone/send \
+  -H "Authorization: Bearer 面板密码" -H "Content-Type: application/json" \
+  -d '{"sid":"<上一步的 sid>","mobile":"13800000000","country_code":"86"}'
+
+# 3) 校验验证码 -> 自动换凭证 -> 落盘 + 热加载入池
+curl -X POST http://127.0.0.1:18888/panel/api/login/phone/verify \
+  -H "Authorization: Bearer 面板密码" -H "Content-Type: application/json" \
+  -d '{"sid":"<sid>","code":"123456"}'
+
+# 会话状态（前端轮询 / 排障）
+curl "http://127.0.0.1:18888/panel/api/login/phone/status?sid=<sid>" -H "Authorization: Bearer 面板密码"
+```
+
+链路是 11 步（设备授权 state → Keycloak → OneID → 短信 → broker 回调 → 换凭证），
+
+每一步的实现都在 `internal/phonelogin` 的文件头里标了"为什么"。三个必须照做的点：
+
+- **每个会话有自己的 cookie jar**：OneID 登录态横跨 `workbuddy.cn` 与 `oauth2.account.tencent.com`，
+
+  共用会把不同用户串在一起（并发登录表现为"串号"）
+
+- **重定向只在本域白名单内跳**（workbuddy.cn / codebuddy.cn / workbuddy.ai / tencent.com），
+
+  跳去站外就停 —— 防被引走
+
+- **校验对同一会话幂等**：`state_token` 是一次性的，并发/重复校验会变成"成功一次 + 报一次无效 token"，
+
+  用户看到的是莫名其妙的失败
+
+关于图形验证码：上游对**单个手机号**做频率风控 —— 同一号码短时间内请求发码次数过多会要求图形验证码
+
+（实测是按号不是按 IP）。这一步纯协议过不去，接口如实返回 `step=sms_send` / `reason=need_captcha`
+
+并提示"换号或稍后再试"，不会把失败伪装成网络错误。换号或等一会儿即可恢复。
+
+手机号登录只有 CN（短信体系仅国内有）；国际版账号请走浏览器授权登录。
 ### 接到常见客户端
 
 | 客户端 | 填法 |

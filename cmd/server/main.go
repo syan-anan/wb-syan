@@ -22,6 +22,7 @@ import (
 	"github.com/syan-anan/wb-syan/internal/keys"
 	"github.com/syan-anan/wb-syan/internal/livecfg"
 	"github.com/syan-anan/wb-syan/internal/panel"
+	"github.com/syan-anan/wb-syan/internal/phonelogin"
 	"github.com/syan-anan/wb-syan/internal/pool"
 	"github.com/syan-anan/wb-syan/internal/redisstore"
 	"github.com/syan-anan/wb-syan/internal/scheduler"
@@ -141,6 +142,10 @@ func main() {
 	up.Profile = profileHolder
 	log.Printf("客户端参数档案已接线：desktop=%s cli=%s 模式=%s（来源见面板「客户端参数」）",
 		profileHolder.Effective().DesktopVersion, profileHolder.Effective().CLIVersion, profileHolder.Source())
+	// 手机号登录：短信验证码链路（+86/+852/+853）。会话是进程内状态 ——
+	// 登录是短时交互，重启后重来一次的成本极低，不值得为它引入持久化。
+	phoneMgr := phonelogin.New(phonelogin.Config{})
+	log.Printf("手机号登录已接线：支持 +86 / +852 / +853（面板「添加账号」走短信验证码）")
 	// 短 RPC 总时长上限（refresh/checkin/balance/FetchModels），语义不变。
 	up.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	// 聊天 SSE 首字节前（响应头）上限：cfg 已 normalize（缺省回落 timeout_seconds）。
@@ -301,6 +306,8 @@ func main() {
 		SaveClientProfile: func(profile map[string]any, source string) error {
 			return saveClientProfile(profile, source, *cfgPath, profileHolder)
 		},
+		// 手机号登录（+86/+852/+853）：短信验证码换凭证，与浏览器登录并列的第二条入口。
+		PhoneLogin: phoneMgr,
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。

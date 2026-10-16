@@ -28,6 +28,7 @@ import (
 	"github.com/syan-anan/wb-syan/internal/httpauth"
 	"github.com/syan-anan/wb-syan/internal/keys"
 	"github.com/syan-anan/wb-syan/internal/livecfg"
+	"github.com/syan-anan/wb-syan/internal/phonelogin"
 	"github.com/syan-anan/wb-syan/internal/pool"
 	"github.com/syan-anan/wb-syan/internal/scheduler"
 	"github.com/syan-anan/wb-syan/internal/upstream"
@@ -85,6 +86,9 @@ type Config struct {
 	// SaveClientProfile 持久化档案（写回 config.json 的 client_profile + 热更新持有者）。
 	// nil 时保存/重置接口返回 501（只读展示）。
 	SaveClientProfile func(profile map[string]any, source string) error
+
+	// PhoneLogin 手机号登录（+86/+852/+853）会话管理器；nil 时相关接口返回 501。
+	PhoneLogin *phonelogin.Manager
 
 	// StickyCount 返回粘性会话绑定数；nil 时报告 0。
 	StickyCount func() int
@@ -198,6 +202,11 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
+	// 手机号登录（+86/+852/+853）：短信验证码链路，与上面的设备授权流并列。
+	p.mux.HandleFunc("POST /panel/api/login/phone/start", p.withAuth(p.phoneStart))
+	p.mux.HandleFunc("POST /panel/api/login/phone/send", p.withAuth(p.phoneSend))
+	p.mux.HandleFunc("POST /panel/api/login/phone/verify", p.withAuth(p.phoneVerify))
+	p.mux.HandleFunc("GET /panel/api/login/phone/status", p.withAuth(p.phoneStatus))
 	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importCockpit))
 	// 加密凭证（.info / .jsonl）导入与导出：需要运维配置 credential_key_file 才能
 	// 处理加密字段；明文 .info 与未配密钥时的报错口径见 credential.go。
