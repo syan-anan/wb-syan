@@ -1247,6 +1247,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <div class="tabs" id="addTabs">
         <button class="tab on" data-tab="login">浏览器登录</button>
         <button class="tab" data-tab="import">导入 JSON</button>
+        <button class="tab" data-tab="phone">手机号登录</button>
       </div>
     </header>
     <div class="body">
@@ -1275,6 +1276,25 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         <input type="file" id="importFile" accept=".json" style="margin-bottom:8px">
         <div id="importDone" class="state ok" hidden></div>
         <div id="importErr" class="state err" hidden></div>
+      </div>
+      <!-- 手机号登录（+86 / +852 / +853） -->
+      <div id="addTabPhone" class="tab-panel" hidden>
+        <div class="hint" style="margin-bottom:8px">用手机号 + 短信验证码直接登录并加入号池（仅国内版）。验证码由上游下发，请确保号码可收短信。</div>
+        <div class="realm-row">
+          <label class="sel-note">地区<select id="phCC">
+            <option value="86">中国大陆 +86</option>
+            <option value="852">中国香港 +852</option>
+            <option value="853">中国澳门 +853</option>
+          </select></label>
+          <input id="phMobile" placeholder="手机号（11 位 / 8 位）" autocomplete="off" style="flex:1">
+          <button type="button" id="phSend">发送验证码</button>
+        </div>
+        <div class="realm-row" style="margin-top:8px">
+          <input id="phCode" placeholder="6 位验证码" autocomplete="one-time-code" style="flex:1">
+          <button type="button" id="phVerify" class="primary">登录并添加</button>
+        </div>
+        <div id="phState" class="state" hidden></div>
+        <div id="phErr" class="state err" hidden></div>
       </div>
     </div>
     <footer>

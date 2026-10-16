@@ -1069,11 +1069,17 @@ function openAdd() {
   $('btnCopyUrl').hidden = true; $('btnOpenUrl').hidden = true;
   $('btnStartLogin').hidden = false; $('btnStartLogin').disabled = false;
   stopPoll();
+  // 重开对话框时按当前页签纠正页脚按钮（上次可能停在手机号页签）。
+  const onTab = document.querySelector('#addTabs .tab.on') || { dataset: { tab: 'login' } };
+  switchAddTab(onTab.dataset.tab);
 }
 function switchAddTab(tab) {
   document.querySelectorAll('#addTabs .tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   $('addTabLogin').hidden = tab !== 'login';
   $('addTabImport').hidden = tab !== 'import';
+  $('addTabPhone').hidden = tab !== 'phone';
+  // 「获取授权链接」属于浏览器登录那一条：切到别的页签就藏起来，免得点了没反应。
+  $('btnStartLogin').hidden = tab !== 'login';
 }
 document.querySelectorAll('#addTabs .tab').forEach(b => {
   b.onclick = () => switchAddTab(b.dataset.tab);
@@ -2990,3 +2996,72 @@ async function loadGrowth(force) {
 }
 $('grReload').onclick = () => loadGrowth(true);
 $('grUID').onchange = () => loadGrowth(false);
+
+/* ── 手机号登录（添加账号对话框里的第三个页签）───────────────────────
+   流程：start（建会话）→ send（发短信）→ verify（校验并入库）。
+   会话 sid 在这里缓存；对话框重开时会取新的（旧会话服务端 15 分钟过期）。 */
+let phSID = '';
+let phTimer = null;
+function phMsg(text, isErr) {
+  const ok = $('phState'), err = $('phErr');
+  ok.hidden = !text || isErr;
+  ok.textContent = (!isErr && text) ? text : '';
+  err.hidden = !isErr;
+  err.textContent = isErr ? text : '';
+}
+async function phEnsureSession() {
+  if (phSID) return phSID;
+  const r = await api('login/phone/start', { method: 'POST' });
+  phSID = r.sid;
+  return phSID;
+}
+async function phSend() {
+  const b = $('phSend');
+  const mobile = $('phMobile').value.trim();
+  if (!mobile) { phMsg('请先填手机号', true); return; }
+  b.disabled = true;
+  phMsg('正在发送…');
+  try {
+    await phEnsureSession();
+    const r = await api('login/phone/send', {
+      method: 'POST',
+      body: JSON.stringify({ sid: phSID, mobile: mobile, country_code: $('phCC').value }),
+    });
+    phMsg('验证码已发送，' + (r.expires_in || 60) + ' 秒内有效');
+    let left = r.retry_after || 60;
+    clearInterval(phTimer);
+    b.textContent = left + 's';
+    phTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) { clearInterval(phTimer); b.disabled = false; b.textContent = '重新发送'; }
+      else b.textContent = left + 's';
+    }, 1000);
+  } catch (e) {
+    b.disabled = false;
+    // need_captcha 是**按号**风控：换号或等一会儿即可，提示里说清楚。
+    phMsg(e.message, true);
+  }
+}
+async function phVerify() {
+  const b = $('phVerify');
+  const code = $('phCode').value.trim();
+  if (!phSID) { phMsg('请先发送验证码', true); return; }
+  if (!code) { phMsg('请填 6 位验证码', true); return; }
+  b.disabled = true;
+  phMsg('正在登录并入库…');
+  try {
+    const r = await api('login/phone/verify', {
+      method: 'POST', body: JSON.stringify({ sid: phSID, code: code }),
+    });
+    phMsg('已添加：' + (r.nickname || r.uid) + (r.credits >= 0 ? '（积分 ' + r.credits + '）' : ''));
+    toast('账号已加入号池', 'ok');
+    phSID = ''; $('phCode').value = ''; $('phMobile').value = '';
+    clearInterval(phTimer); $('phSend').textContent = '发送验证码'; $('phSend').disabled = false;
+    loadOverview(true);
+  } catch (e) {
+    phMsg(e.message, true);
+  }
+  b.disabled = false;
+}
+$('phSend').onclick = phSend;
+$('phVerify').onclick = phVerify;

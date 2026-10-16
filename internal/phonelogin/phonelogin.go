@@ -92,7 +92,9 @@ func (e *Error) Reply() map[string]any {
 	if e == nil {
 		return nil
 	}
-	return map[string]any{"ok": false, "step": e.Step, "reason": e.Reason, "message": e.Msg}
+	// error 键是给前端 fetch 封装用的：面板的 api() 只认 d.error，
+	// 少了它用户看到的就是"HTTP 400"而不是"请输入所选地区的有效手机号"。
+	return map[string]any{"ok": false, "error": e.Msg, "step": e.Step, "reason": e.Reason, "message": e.Msg}
 }
 
 // Config 管理器配置（零值 = 默认端点 + 默认上限，可直接用）。
