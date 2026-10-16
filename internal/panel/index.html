@@ -937,6 +937,12 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
               </div>
               <div class="acctpick" id="kfAccts"></div>
               <span class="hint">勾选后，用这个密钥发起的请求只会落在勾选的账号上，不会走其它账号。</span></div>
+            <div class="fld"><span class="lb">独占绑定（可选）</span>
+              <div class="inline">
+                <label class="chk"><input type="checkbox" id="kfExclusive"> 独占所选账号</label>
+              </div>
+              <span class="hint">勾选后，所选账号只对这条密钥开放：主密钥与其他密钥（含自动换号、测速、全冷却兜底）都会跳过它；本密钥也只用这个账号，账号禁用 / 耗尽 / 模型限额时不借用其他账号。需要且只能勾选一个账号，同一账号也不能被两条密钥同时独占。</span></div>
+
 
             <div class="hr"></div>
             <label class="fld"><span class="lb">模型白名单（可选，逗号分隔）</span>

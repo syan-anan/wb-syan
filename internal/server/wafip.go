@@ -21,6 +21,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/syan-anan/wb-syan/internal/wafguard"
 )
 
 // wafIPWindow IP 级判定滑动窗 + 激活时长：窗内不同账号命中 WAF 403 达阈值即
@@ -39,6 +41,9 @@ type wafIPGate struct {
 	mu    sync.Mutex
 	hits  map[string]time.Time // uid → 最近一次 WAF 403 时刻（判定窗内，惰性剪枝）
 	until time.Time            // IP 级拦截激活截止；零值 = 未激活
+	// guard 可选的进程级出口保护（wafguard.Guard）：本状态机激活时同步置位，让后台维护
+	// 任务在同一份证据下顺延。nil = 只做对话侧 fail-fast（裸用/测试）。
+	guard *wafguard.Guard
 }
 
 // noteWaf 记一次某账号的 WAF 403，返回记账后 IP 级拦截是否激活（调用方据此
@@ -65,6 +70,11 @@ func (g *wafIPGate) noteWaf(uid string) bool {
 	}
 	if len(g.hits) >= wafIPThreshold {
 		g.until = now.Add(wafIPWindow)
+		// 同一份证据同步到进程级出口保护：对话侧止损的同时，后台维护也进入顺延，
+		// 否则出口正被风控、后台还在逐号打上游，把这轮风控越打越长。
+		if g.guard != nil {
+			g.guard.Activate(wafIPWindow)
+		}
 		log.Printf("WARN: [server] waf ip-level block: %d accounts hit waf 403 within %s, rotate fail-fast until %s", len(g.hits), wafIPWindow, g.until.Format(time.RFC3339))
 		g.hits = map[string]time.Time{}
 		return true

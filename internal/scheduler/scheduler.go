@@ -15,6 +15,7 @@ import (
 	"github.com/syan-anan/wb-syan/internal/logfmt"
 	"github.com/syan-anan/wb-syan/internal/pool"
 	"github.com/syan-anan/wb-syan/internal/upstream"
+	"github.com/syan-anan/wb-syan/internal/wafguard"
 )
 
 // Config 调度器依赖。
@@ -62,6 +63,11 @@ type Config struct {
 	// 同一账号被对话与后台同时打上游，并发压力翻倍、WAF 风控更容易触发。
 	// 必须是**进程内唯一实例**：闸门的 lastFinish 是实例字段，节流基准跨任务共享才有意义。
 	Gate *BackendGate
+
+	// WAF 出口保护（可选；nil = 不做整体顺延）。
+	// 装配后，对话路径判定 WAF 出口拦截时会置位它，本轮所有后台维护**整轮顺延**：
+	// 不发起任何上游调用、不产生任何账号记账，窗口过后自动恢复（见 wafguard 包）。
+	WAF *wafguard.Guard
 }
 
 // Scheduler 调度器。
@@ -153,6 +159,22 @@ func (s *Scheduler) withAccount(ctx context.Context, uid, label string, thaw boo
 	}
 	defer release()
 	op()
+}
+
+// wafDeferred 报告出口保护是否正在生效；生效时调用方应整轮顺延（直接 return）。
+//
+// 这是「保护期顺延、不记成功」的落点：保护期内每个账号都会失败，与其把这些失败记进
+// 账号健康度（好号被冤枉降温）或触发轮换，不如整轮不动——出口是 IP 维度的，换号不换
+// IP，保护期内没有任何一条后台调用是有意义的。窗口自然会到期，下一轮时点照常执行。
+//
+// 顺延与"成功"的区别只体现在日志与账号记账上：这里不打任何账号级记录（既不计成功
+// 也不计失败），只打一行说明本轮为什么没动。
+func (s *Scheduler) wafDeferred(what string) bool {
+	if s.cfg.WAF == nil || !s.cfg.WAF.Active() {
+		return false
+	}
+	log.Printf("scheduler: 出口保护中（剩余 %s），%s 顺延本轮", s.cfg.WAF.Remaining().Round(time.Second), what)
+	return true
 }
 
 // ExpiringSoonWindow 返回当前快过期路由窗口（读取时与热配置写在 schedMu 下同步）。
@@ -427,6 +449,9 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // 末尾追加连登管家（streak.go）：可兑换档位自动兑换 + 抽奖次数自动抽完——
 // 连登兑换按天数解锁，挂在每日签到后即「到天数那天自动完成兑换→抽奖闭环」。
 func (s *Scheduler) RunCheckinNow() {
+	if s.wafDeferred("签到") {
+		return
+	}
 	expiringSoon := s.ExpiringSoonWindow()
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
@@ -479,6 +504,9 @@ func (s *Scheduler) RunActivityNow() {
 
 // runActivity 活跃上报遍历，随 ctx 取消立即退出。
 func (s *Scheduler) runActivity(ctx context.Context) {
+	if s.wafDeferred("活跃上报") {
+		return
+	}
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
@@ -534,6 +562,9 @@ func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 // 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
 // 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
 func (s *Scheduler) RunKeepaliveNow() {
+	if s.wafDeferred("token 保活") {
+		return
+	}
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue
@@ -566,6 +597,9 @@ func (s *Scheduler) RunKeepaliveNow() {
 // 但不做签到、不刷新 token——只让"积分"这个观测量保持新鲜。
 // 供两类入口复用：后台周期任务（StartBalanceRefresh）与面板手动全量刷新。
 func (s *Scheduler) RunBalanceRefreshNow() {
+	if s.wafDeferred("余额刷新") {
+		return
+	}
 	var wg sync.WaitGroup
 	expiringSoon := s.ExpiringSoonWindow()
 	for _, st := range s.cfg.Pool.List() {

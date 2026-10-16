@@ -27,21 +27,22 @@ import (
 // keyView 子密钥的对外视图：只回显掩码，绝不回显明文（明文仅在创建时一次性返回）。
 // used_today / used_hour 是配额窗口内的已用请求数（运行态，来自 keys.Quota）。
 type keyView struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	KeyMasked string   `json:"key_masked"`
-	Note      string   `json:"note,omitempty"`
-	Accounts  []string `json:"accounts"`
-	Models    []string `json:"models"`
-	Realms    []string `json:"realms"`
-	TimeStart string   `json:"time_start,omitempty"`
-	TimeEnd   string   `json:"time_end,omitempty"`
-	ExpiresAt int64    `json:"expires_at,omitempty"`
-	DailyLimit  int    `json:"daily_limit,omitempty"`
-	HourlyLimit int    `json:"hourly_limit,omitempty"`
-	Disabled    bool   `json:"disabled"`
-	UsedToday   int    `json:"used_today"`
-	UsedHour    int    `json:"used_hour"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	KeyMasked   string   `json:"key_masked"`
+	Note        string   `json:"note,omitempty"`
+	Accounts    []string `json:"accounts"`
+	Exclusive   bool     `json:"exclusive"`
+	Models      []string `json:"models"`
+	Realms      []string `json:"realms"`
+	TimeStart   string   `json:"time_start,omitempty"`
+	TimeEnd     string   `json:"time_end,omitempty"`
+	ExpiresAt   int64    `json:"expires_at,omitempty"`
+	DailyLimit  int      `json:"daily_limit,omitempty"`
+	HourlyLimit int      `json:"hourly_limit,omitempty"`
+	Disabled    bool     `json:"disabled"`
+	UsedToday   int      `json:"used_today"`
+	UsedHour    int      `json:"used_hour"`
 }
 
 // accountRef 供前端「绑定账号」多选展示的账号条目（不含任何凭证）。
@@ -180,7 +181,8 @@ func (p *Panel) listKeys(w http.ResponseWriter, r *http.Request) {
 		v := keyView{
 			ID: e.ID, Name: e.Name, KeyMasked: maskKey(e.Key),
 			Note: e.Note, Disabled: e.Disabled,
-			Accounts: orEmpty(e.Accounts), Models: orEmpty(e.Models), Realms: orEmpty(e.Realms),
+			Accounts: orEmpty(e.Accounts), Exclusive: e.Exclusive,
+			Models: orEmpty(e.Models), Realms: orEmpty(e.Realms),
 			TimeStart: e.TimeStart, TimeEnd: e.TimeEnd, ExpiresAt: e.ExpiresAt,
 			DailyLimit: e.DailyLimit, HourlyLimit: e.HourlyLimit,
 		}
@@ -226,6 +228,7 @@ func (p *Panel) accountRefs(w http.ResponseWriter, r *http.Request) {
 // keyLimits 新建/修改共用的约束字段。
 type keyLimits struct {
 	Accounts    []string
+	Exclusive   bool
 	Models      []string
 	Realms      []string
 	TimeStart   string
@@ -233,6 +236,31 @@ type keyLimits struct {
 	ExpiresAt   int64
 	DailyLimit  int
 	HourlyLimit int
+}
+
+// exclusiveConflict 返回独占绑定冲突说明（空 = 无冲突）。selfID 为编辑中的条目
+// （新建传空串）。
+//
+// 同一账号不能被两条启用中的子密钥同时独占：两条 key 都以为自己独占，公共池又两边
+// 都挡，账号实际谁也调不到——静默失效，最难排查的一类。停用的 key 不算占用（停用是
+// 运维的"先松开"动作，账号应当立刻可被重新绑定）。
+func exclusiveConflict(entries []keys.Entry, selfID string, accounts []string, exclusive bool) string {
+	if !exclusive {
+		return ""
+	}
+	for _, e := range entries {
+		if e.ID == selfID || !e.Exclusive || e.Disabled {
+			continue
+		}
+		for _, a := range e.Accounts {
+			for _, want := range accounts {
+				if a == want {
+					return "该账号已被「" + e.Name + "」独占绑定，请先解除原绑定"
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // sanitizeLimits 规范化并校验约束字段；非法（时段格式/负数配额）返回错误。
@@ -269,6 +297,7 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		Key         string   `json:"key"`
 		Note        string   `json:"note"`
 		Accounts    []string `json:"accounts"`
+		Exclusive   bool     `json:"exclusive"`
 		Models      []string `json:"models"`
 		Realms      []string `json:"realms"`
 		TimeStart   string   `json:"time_start"`
@@ -287,12 +316,20 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lim, err := sanitizeLimits(keyLimits{
-		Accounts: body.Accounts, Models: body.Models, Realms: body.Realms,
+		Accounts: body.Accounts, Exclusive: body.Exclusive, Models: body.Models, Realms: body.Realms,
 		TimeStart: body.TimeStart, TimeEnd: body.TimeEnd, ExpiresAt: body.ExpiresAt,
 		DailyLimit: body.DailyLimit, HourlyLimit: body.HourlyLimit,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if lim.Exclusive && len(lim.Accounts) != 1 {
+		writeErr(w, http.StatusBadRequest, "独占绑定需要且只能选择一个账号（清空账号或其他账号会被公共池跳过）")
+		return
+	}
+	if msg := exclusiveConflict(p.currentEntries(), "", lim.Accounts, lim.Exclusive); msg != "" {
+		writeErr(w, http.StatusConflict, msg)
 		return
 	}
 	key := strings.TrimSpace(body.Key)
@@ -314,7 +351,7 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 	entry := keys.Entry{
 		ID: keys.NewID(key), Name: name, Key: key, Note: strings.TrimSpace(body.Note),
-		Accounts: lim.Accounts, Models: lim.Models, Realms: lim.Realms,
+		Accounts: lim.Accounts, Exclusive: lim.Exclusive, Models: lim.Models, Realms: lim.Realms,
 		TimeStart: lim.TimeStart, TimeEnd: lim.TimeEnd, ExpiresAt: lim.ExpiresAt,
 		DailyLimit: lim.DailyLimit, HourlyLimit: lim.HourlyLimit,
 	}
@@ -322,8 +359,12 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "保存失败: "+err.Error())
 		return
 	}
-	log.Printf("panel: 新建子密钥 %s（%s，账号 %d / 模型 %d / 域 %d / 配额 %d日-%d时）",
-		entry.ID, entry.Name, len(entry.Accounts), len(entry.Models), len(entry.Realms),
+	scope := ""
+	if entry.Exclusive {
+		scope = "，独占账号 " + entry.Accounts[0]
+	}
+	log.Printf("panel: 新建子密钥 %s（%s%s，账号 %d / 模型 %d / 域 %d / 配额 %d日-%d时）",
+		entry.ID, entry.Name, scope, len(entry.Accounts), len(entry.Models), len(entry.Realms),
 		entry.DailyLimit, entry.HourlyLimit)
 	// 明文仅在创建响应里返回一次；此后列表只给掩码。
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": entry.ID, "key": key})
@@ -340,6 +381,7 @@ func (p *Panel) updateKey(w http.ResponseWriter, r *http.Request) {
 		Name        *string   `json:"name"`
 		Note        *string   `json:"note"`
 		Accounts    *[]string `json:"accounts"`
+		Exclusive   *bool     `json:"exclusive"`
 		Models      *[]string `json:"models"`
 		Realms      *[]string `json:"realms"`
 		TimeStart   *string   `json:"time_start"`
@@ -374,6 +416,9 @@ func (p *Panel) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Accounts != nil {
 		e.Accounts = sanitizeAccounts(*body.Accounts)
+	}
+	if body.Exclusive != nil {
+		e.Exclusive = *body.Exclusive
 	}
 	if body.Models != nil {
 		e.Models = sanitizeModels(*body.Models)
@@ -420,6 +465,15 @@ func (p *Panel) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Disabled != nil {
 		e.Disabled = *body.Disabled
+	}
+	// 独占的两条硬约束，与新建同口径：恰好一个账号 + 不与别人的独占冲突。
+	if e.Exclusive && len(e.Accounts) != 1 {
+		writeErr(w, http.StatusBadRequest, "独占绑定需要且只能选择一个账号（清空账号或其他账号会被公共池跳过）")
+		return
+	}
+	if msg := exclusiveConflict(entries, e.ID, e.Accounts, e.Exclusive); msg != "" {
+		writeErr(w, http.StatusConflict, msg)
+		return
 	}
 	entries[idx] = e
 	if err := p.cfg.SaveKeys(entries); err != nil {

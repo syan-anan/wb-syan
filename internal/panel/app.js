@@ -2655,6 +2655,7 @@ function toLocalInput(unix) {
 function keyLimitTags(k) {
   const tags = [];
   const n = (k.accounts || []).length;
+  if (k.exclusive && n === 1) tags.push('独占');
   tags.push(n ? ('账号 ' + n + ' 个') : '账号不限');
   if ((k.models || []).length) tags.push('模型 ' + k.models.join('、'));
   if ((k.realms || []).length) tags.push('域 ' + k.realms.map(r => r === 'global' ? '国际' : '国内').join('/'));
@@ -2733,6 +2734,7 @@ function keyFormReset() {
   $('kfTimeStart').value = ''; $('kfTimeEnd').value = ''; $('kfExpires').value = '';
   $('kfDaily').value = ''; $('kfHourly').value = '';
   $('kfAcctSearch').value = ''; $('kfAcctRealm').value = '';
+  $('kfExclusive').checked = false;
   $('keyFormTitle').textContent = '新建密钥';
   $('kfCancel').hidden = true;
   renderAcctPicker();
@@ -2749,6 +2751,7 @@ function editKey(id) {
   $('kfKey').value = '';
   $('kfNote').value = k.note || '';
   $('kfModels').value = (k.models || []).join(', ');
+  $('kfExclusive').checked = !!k.exclusive;
   $('kfRealmCn').checked = (k.realms || []).indexOf('cn') >= 0;
   $('kfRealmGlobal').checked = (k.realms || []).indexOf('global') >= 0;
   $('kfTimeStart').value = k.time_start || '';
@@ -2777,6 +2780,7 @@ function collectKeyBody() {
     name: $('kfName').value.trim(),
     note: $('kfNote').value.trim(),
     accounts: collectAccts(),
+    exclusive: $('kfExclusive').checked,
     models: $('kfModels').value.split(/[,，\n]/).map(s => s.trim()).filter(Boolean),
     realms: realms,
     time_start: $('kfTimeStart').value.trim(),

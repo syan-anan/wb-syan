@@ -18,6 +18,9 @@ func (s *Scheduler) RunBlackcatNow() {
 		log.Printf("blackcat: 当前不在 23:00–08:00 计数窗口，跳过")
 		return
 	}
+	if s.wafDeferred("夜猫子补足") {
+		return
+	}
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue

@@ -30,6 +30,12 @@ type Entry struct {
 	Key      string   `json:"key"`                // 密钥本体
 	Note     string   `json:"note,omitempty"`     // 备注
 	Accounts []string `json:"accounts,omitempty"` // 账号白名单（uid）；空 = 不限账号
+	// Exclusive 独占绑定：Accounts 里的账号**只对这条子密钥开放**——公共池（主密钥、
+	// 其他子密钥、自动换号、测速）一律跳过它们；绑定密钥也只用这些账号的额度与权益，
+	// 账号禁用 / 耗尽 / 模型限额 / 上游失败时**不借用**其他账号。
+	// 只在 Accounts 恰好一个时生效（面板侧校验）——"独占"的语义是"这条 key 的专属号"，
+	// 绑多个就成了"私有池"，收益与实现复杂度不成比例。
+	Exclusive bool `json:"exclusive,omitempty"`
 	// Models 模型白名单；空 = 不限。每项为模型名，支持结尾 "*" 前缀通配（如 "glm-*"）；
 	// 判定不区分大小写。裸模型名与带域前缀的完整名都可写（网关按裸名判定）。
 	Models []string `json:"models,omitempty"`
@@ -42,8 +48,8 @@ type Entry struct {
 	// ExpiresAt 有效期截止（Unix 秒）；0 = 不过期。
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// DailyLimit / HourlyLimit 时间窗配额（请求数）；0 = 不限。计数与滚动窗口见 quota.go。
-	DailyLimit  int `json:"daily_limit,omitempty"`
-	HourlyLimit int `json:"hourly_limit,omitempty"`
+	DailyLimit  int  `json:"daily_limit,omitempty"`
+	HourlyLimit int  `json:"hourly_limit,omitempty"`
 	Disabled    bool `json:"disabled,omitempty"` // true = 立即失效（保留配置便于恢复）
 }
 
@@ -53,13 +59,16 @@ type Identity struct {
 	KeyID    string   // 子 key 的 ID；主 key 为空
 	Name     string   // 展示名（子 key 的 Name）
 	Accounts []string // 账号白名单；空 = 不限
-	Models   []string // 模型白名单；空 = 不限
-	Realms   []string // 域白名单；空 = 不限
-	TimeStart string  // 每日生效起点 "HH:MM"；空 = 不限
-	TimeEnd   string  // 每日生效终点 "HH:MM"；空 = 不限
-	ExpiresAt int64   // 有效期截止（Unix 秒）；0 = 不过期
-	DailyLimit  int   // 每日请求配额；0 = 不限
-	HourlyLimit int   // 每小时请求配额；0 = 不限
+	// Exclusive 该 key 是否独占其账号白名单（见 Entry.Exclusive）。独占账号对
+	// 其他调用方不可见——选号侧据此构造 deny 集合，而不是在这里改 Allows。
+	Exclusive   bool
+	Models      []string // 模型白名单；空 = 不限
+	Realms      []string // 域白名单；空 = 不限
+	TimeStart   string   // 每日生效起点 "HH:MM"；空 = 不限
+	TimeEnd     string   // 每日生效终点 "HH:MM"；空 = 不限
+	ExpiresAt   int64    // 有效期截止（Unix 秒）；0 = 不过期
+	DailyLimit  int      // 每日请求配额；0 = 不限
+	HourlyLimit int      // 每小时请求配额；0 = 不限
 }
 
 // Restricted 是否限定账号（子 key 且配了账号白名单）。
@@ -88,6 +97,23 @@ func (i Identity) AllowSet() map[string]bool {
 		m[a] = true
 	}
 	return m
+}
+
+// OwnsExclusive 报告该身份是否**独占**绑定指定账号。
+//
+// 单独一个方法而不是塞进 Allows：Allows 回答的是「我能不能用它」，独占回答的是
+// 「别人能不能用它」。选号侧的 deny 集合由这个判定构造，Allows 语义保持原样
+// （否则受限 key 的白名单判定会被两套语义缠在一起）。
+func (i Identity) OwnsExclusive(uid string) bool {
+	if i.Master || !i.Exclusive || uid == "" {
+		return false
+	}
+	for _, a := range i.Accounts {
+		if a == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowsModel 模型白名单判定；未限定 / 无模型上下文（model 为空）恒 true。
@@ -241,6 +267,31 @@ func (s *Store) Entries() []Entry {
 	return out
 }
 
+// ExclusiveUIDs 返回**被独占绑定**的账号集合：任何一条启用中的子 key 声明的
+// Exclusive 账号都进来，与调用方是谁无关。选号侧拿它减去「自己独占的号」得到
+// deny 集合（见 server 侧 exclusiveDeny）。
+//
+// 只看启用中的条目：停用的 key 不该继续霸占账号——停用是运维的「先松开」动作，
+// 账号应当立刻回到公共池。返回 nil 表示一个独占账号都没有（调用方跳过过滤）。
+func (s *Store) ExclusiveUIDs() map[string]bool {
+	if s == nil {
+		return nil
+	}
+	var out map[string]bool
+	for _, e := range s.entries {
+		if !e.Exclusive || e.Disabled || len(e.Accounts) == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[string]bool{}
+		}
+		for _, a := range e.Accounts {
+			out[a] = true
+		}
+	}
+	return out
+}
+
 // ResolveToken 判定 token 身份。
 //
 // 返回 ok=false 表示 token 无效（调用方应 401）。未启用鉴权时恒返回主身份。
@@ -268,7 +319,7 @@ func (s *Store) ResolveToken(tok string) (Identity, bool) {
 	e := s.entries[matched]
 	return Identity{
 		KeyID: e.ID, Name: e.Name,
-		Accounts: e.Accounts, Models: e.Models, Realms: e.Realms,
+		Accounts: e.Accounts, Exclusive: e.Exclusive, Models: e.Models, Realms: e.Realms,
 		TimeStart: e.TimeStart, TimeEnd: e.TimeEnd, ExpiresAt: e.ExpiresAt,
 		DailyLimit: e.DailyLimit, HourlyLimit: e.HourlyLimit,
 	}, true
@@ -343,6 +394,13 @@ func NormalizeEntries(entries []Entry) ([]Entry, bool) {
 			changed = true
 		}
 		e.Accounts = accts
+		// 独占只对「恰好一个账号」有意义：绑 0 个无从独占，绑 2 个以上语义变成
+		// "私有池"（与面板校验和帮助文案不一致）——两种情况都降级为普通白名单。
+		// 这里是手改 config.json 的兜底；面板侧写入前已先拒。
+		if e.Exclusive && len(e.Accounts) != 1 {
+			e.Exclusive = false
+			changed = true
+		}
 
 		models := make([]string, 0, len(e.Models))
 		mseen := map[string]bool{}

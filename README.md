@@ -201,7 +201,7 @@ docker compose logs wb-syan | grep -i api_key
 | **套餐** | 各账号可用套餐详情 |
 | **用量** | 用量总览（请求 / token / 延迟 / 失败 / **窗口内积分已用**）；按账号 / 按模型 / 按域 / 按客户端四张分表，**维度多选**（想看哪张勾哪张，全勾=全部）；窗口一键切近 24 小时 / 3 天 / 7 天 / 30 天 / 全部历史，**「积分已用」与四张分表全部随窗口口径变化**（逐请求实测，精确到个位、不做 k/m 缩写）|
 | **积分构成** | 每个账号的积分到期分布（按剩余天数分桶）、账号对比、逐包明细；顶部**按「域 / 账号」多选筛选**（留空=全部），三块内容共用同一份筛选结果 |
-| **密钥** | 新建子密钥（分流）：可绑定账号白名单 / 模型白名单 / 域 / 每日生效时段 / 有效期 / 每时·每日请求配额；卡片式列表一眼看清每条 key 的全部限制与配额用量，可随时停用、重置计数、查看/删除；子密钥进不了面板 |
+| **密钥** | 新建子密钥（分流）：可绑定**独占账号** / 账号白名单 / 模型白名单 / 域 / 每日生效时段 / 有效期 / 每时·每日请求配额；卡片式列表一眼看清每条 key 的全部限制与配额用量，可随时停用、重置计数、查看/删除；子密钥进不了面板 |
 | **配置** | 账号池与流量治理、上游与高级、定时任务时点、系统提示词模式（保存后热生效） |
 | **日志** | 最近 500 行运行日志（撑满窗口剩余高度、16px 等宽字号），自动滚动，可按任务 / 对话 / 系统分频道筛选 |
 
@@ -262,6 +262,8 @@ curl http://127.0.0.1:18888/status \
   -H "Authorization: Bearer 你的APIKEY"
 ```
 
+响应里的 `waf_protection` 是出口保护状态（上游 WAF 判定网关出口 IP 被拦时置位，`active` / `remaining_sec`），置位期间后台维护任务整轮顺延，不发上游调用。
+
 ### 子密钥分流
 
 面板「**密钥**」页新建子密钥，一条 key 可以同时叠加下面**全部**限制维度（不填 = 该维度不限）：
@@ -269,6 +271,7 @@ curl http://127.0.0.1:18888/status \
 | 维度 | 说明 |
 |------|------|
 | **账号** | 勾选账号后，用这条 key 发起的请求**只会落在勾选的账号上**，不会走其它账号；不勾选 = 走全部账号 |
+| **独占账号** | 勾选后，所选账号**只对这条 key 开放**：主密钥与其他子密钥（含自动换号、测速、全冷却兜底）都会跳过它。需要且只能选一个账号，同一账号不能被两条 key 同时独占（停用其中一条即可转移） |
 | **模型** | 只允许调用列出的模型，逗号分隔；支持结尾 `*` 前缀通配（`glm-*` 匹配所有 glm 开头的模型），不区分大小写。**同时 `GET /v1/models` 也只返回白名单内的模型**（客户端模型下拉里看不到其它模型，不是「列全部、只放开一条通道」） |
 | **域** | 只允许 `cn`（国内）或 `global`（国际）域模型；两个都勾 = 不限 |
 | **每日生效时段** | 例如 `09:00` → `18:00`；只填一个 = 从该点起 / 到该点止；跨零点（`22:00` → `06:00`）自动按跨天窗口判定 |
@@ -292,6 +295,22 @@ curl http://127.0.0.1:18888/status \
 
 用子密钥时把客户端 API Key 换成子密钥即可，base_url 不变。
 
+### Anthropic 兼容端点（Claude Code / Anthropic SDK）
+
+网关同时暴露 `POST /v1/messages`，把 Anthropic Messages 请求翻成内部 Chat 形态再走同一条转发链路
+（选号 / 粘性 / 轮转 / 降级 / 用量记账与 OpenAI 端点完全一致），响应再翻回 Anthropic 形态：
+
+```bash
+curl -X POST http://127.0.0.1:18888/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: 你的APIKEY" \
+  -d '{"model":"glm-5.2","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+- 鉴权同时接受 `x-api-key`（Anthropic SDK / Claude Code 的默认头）与 `Authorization: Bearer`
+- `stream: true` 返回标准 Anthropic SSE 事件序列（`message_start` → `content_block_*` → `message_delta` → `message_stop`）
+- 出错时返回 Anthropic 形状的错误体（`{"type":"error","error":{"type":...,"message":...}}`），上游原文保留在 `message` 里
+
 ### 接到常见客户端
 
 | 客户端 | 填法 |
@@ -299,7 +318,7 @@ curl http://127.0.0.1:18888/status \
 | Cherry Studio / NextChat / LobeChat | 新建 OpenAI 兼容供应商 → Base URL 填 `http://<IP>:18888/v1`，Key 填 `api_key` |
 | OpenAI SDK (Python) | `OpenAI(base_url="http://<IP>:18888/v1", api_key="...")` |
 | Cline / Roo Code | Provider 选 OpenAI Compatible，Base URL 同上 |
-| Claude Code 类工具 | 指向 `/v1` 的 Anthropic 兼容端点（面板「模型」页确认可用模型） |
+| Claude Code 类工具 | `ANTHROPIC_BASE_URL=http://<IP>:18888`（不用带 `/v1`），key 走 `ANTHROPIC_API_KEY`，模型填 `GET /v1/models` 里的名字 |
 
 ---
 

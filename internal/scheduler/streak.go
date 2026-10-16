@@ -19,6 +19,9 @@ import (
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。
 // 由签到排程（RunCheckinNow）末尾调用；也可面板手动触发。
 func (s *Scheduler) RunStreakBonusNow() {
+	if s.wafDeferred("连登兑换/抽奖") {
+		return
+	}
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue

@@ -22,6 +22,7 @@ import (
 	"github.com/syan-anan/wb-syan/internal/session"
 	"github.com/syan-anan/wb-syan/internal/upstream"
 	"github.com/syan-anan/wb-syan/internal/usage"
+	"github.com/syan-anan/wb-syan/internal/wafguard"
 )
 
 // Config handler 依赖。
@@ -66,6 +67,10 @@ type Config struct {
 	// KeyQuota 子密钥时间窗配额计数器（可选；nil = 不限额）。
 	// 与 pool/usage 同目录落盘（keys_quota.json），跨重启保留窗口内计数。
 	KeyQuota *keys.Quota
+
+	// WAF 进程级出口保护（可选；nil = 只做对话侧 fail-fast）。
+	// 装配后，WAF IP 级拦截激活会同步置位它，后台维护任务据此顺延（见 wafguard 包）。
+	WAF *wafguard.Guard
 }
 
 // loadLive 返回当前运行期快照；Live 为 nil 时用静态字段合成。
@@ -126,6 +131,7 @@ func NewHandler(cfg Config) *Handler {
 		cfg.PromptMode = "custom" // 缺省 custom：网关自有提示词
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	h.wafIP.guard = cfg.WAF
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	// Anthropic Messages 兼容入口：请求翻成 Chat 后交给同一条 chatCompletions
 	// 状态机，响应侧由 anthropicWriter 翻回 Anthropic 形态（见 messages.go）。
@@ -200,6 +206,15 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	// (域, 模型) 的最近探索时刻（键 "realm|model"）。与 accounts[].model_costs
 	// 行对照即可读出「探索→毕业」全链路（单一事实来源，不做双表示）。零回归只增键。
 	exploreEvents, exploreLast := h.cfg.Pool.CostExploreStatus()
+	// waf_protection 进程级出口保护：对话侧 WAF IP 级拦截激活时置位，后台维护在此期间
+	// 顺延（不发起上游调用）。active=false 时 remaining_sec 恒 0。
+	wafActive, wafRemainSec := false, 0
+	if h.cfg.WAF != nil {
+		wafActive = h.cfg.WAF.Active()
+		if wafActive {
+			wafRemainSec = int(h.cfg.WAF.Remaining().Seconds())
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts":       h.cfg.Pool.List(),
 		"total":          total,
@@ -219,6 +234,10 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		"cost_explore": map[string]any{
 			"events_total": exploreEvents,
 			"per_model":    exploreLast,
+		},
+		"waf_protection": map[string]any{
+			"active":        wafActive,
+			"remaining_sec": wafRemainSec,
 		},
 	})
 }
@@ -439,7 +458,8 @@ func (h *Handler) modelList() []map[string]any {
 // FetchGlobalModels 共享缓存，不会触发第二次上游探测）。
 // GlobalEnabled=false 时 modelList 已不进入本分支（逃生门在调用方 gate）。
 func (h *Handler) fetchGlobalModels() ([]string, *auth.Auth) {
-	acct := h.cfg.Pool.PickExcludingForRealm(nil, "", "global")
+	// 公共池探测：独占账号一律跳过（模型目录探测也不该占用别人的专属号）。
+	acct := h.cfg.Pool.PickExcludingForRealmAllowDeny(nil, "", "global", nil, h.exclusiveUIDs())
 	if acct == nil {
 		return nil, nil
 	}
@@ -542,6 +562,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allow := id.AllowSet()
+	// 独占绑定：别人绑定的专属号对本次调用整体不可见（选号 / 粘性 / 兜底一并挡）。
+	deny := exclusiveDeny(h.exclusiveUIDs(), id)
 
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
 	st := newChatStat(time.Now(), body, peek.Stream)
@@ -561,7 +583,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
 			// 子密钥分流：粘性绑定的号若不在该 key 的白名单内，视为无绑定（重新分配）。
 			// 否则受限 key 会借粘性会话跑到白名单外的账号上。
-			if id.Allows(uid) {
+			// 独占号同理：别人的专属号即便落在本 key 的白名单里，也不能借粘性蹭进去。
+			if id.Allows(uid) && !deny[uid] {
 				stickyUID = uid
 			}
 		}
@@ -728,7 +751,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if acct == nil {
 			// 模型感知 + realm 感知选号：模型非空时启用 6004 模型级冷却豁免
 			// （healthyForModel），realm 谓词过滤跨域账号。
-			acct = h.cfg.Pool.PickExcludingForRealmAllow(tried, bareModel, realm, allow)
+			acct = h.cfg.Pool.PickExcludingForRealmAllowDeny(tried, bareModel, realm, allow, deny)
 		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable

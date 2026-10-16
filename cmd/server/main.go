@@ -28,6 +28,7 @@ import (
 	"github.com/syan-anan/wb-syan/internal/session"
 	"github.com/syan-anan/wb-syan/internal/upstream"
 	"github.com/syan-anan/wb-syan/internal/usage"
+	"github.com/syan-anan/wb-syan/internal/wafguard"
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
@@ -165,12 +166,18 @@ func main() {
 	// 后台维护闸门（进程内唯一实例）：后台七类维护操作与对话路径互斥地消费同一批
 	// 账号，避免同号并发打上游放大 WAF 风控。0.8s 账号间隔 + 不重试（maxSkip=1），
 	// 与参考实现 account_slot 一致；lastFinish 是实例字段，故必须只构造一次。
+	// 出口保护（进程级）：对话路径判定 WAF IP 级拦截时置位，后台维护据此整轮顺延——
+	// 与闸门是两层不同的保护：闸门管「同一账号别被两边同时用」，出口保护管「整个出口
+	// 正被风控时后台完全别出声」。
+	wafGuard := wafguard.New()
 	backendGate := scheduler.NewBackendGate(800*time.Millisecond, 1)
 	log.Printf("后台维护闸门已启用：账号间隔 %s（与对话路径互斥，竞争即跳过）", 800*time.Millisecond)
+	log.Printf("出口保护已接线：WAF IP 级拦截激活后，后台维护顺延 %s", wafguard.DefaultWindow)
 	sch := scheduler.New(scheduler.Config{
 		Pool:           p,
 		Upstream:       up,
 		Gate:           backendGate,
+		WAF:            wafGuard,
 		CheckinHours:   cfg.Schedule.CheckinHours,
 		TravelHours:    cfg.Schedule.TravelHours,
 		ActivityHours:  cfg.Schedule.ActivityHours,
@@ -302,6 +309,8 @@ func main() {
 		GlobalEnabled: cfg.Global.Enabled,
 		// 子密钥配额闸门（模型/域/时段/有效期在 keyguard.go 内判定）。
 		KeyQuota: keyQuota,
+		// 出口保护：WAF IP 级拦截时同步置位（wafip.go），供后台任务顺延。
+		WAF: wafGuard,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

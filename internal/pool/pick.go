@@ -14,42 +14,52 @@ import (
 // Pick 单一选号入口（无请求级轮换、无 realm 过滤，模型感知缺省账号级）。
 // 需要请求级轮换（tried）或分池（realm）时用 PickExcludingForRealm。
 func (p *Pool) Pick() *auth.Auth {
-	return p.pick(nil, "", "", nil)
+	return p.pick(nil, "", "", nil, nil)
 }
 
 // PickExcluding 同上，但跳过 tried 中的 uid（请求级轮换）。
 // 挑选策略：healthy 账号中按权重取前 5 名，再在 Top5 内按同一权重加权随机抽签，
 // 意图是打散热点，避免永远打同一个账号。
 func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
-	return p.pick(tried, "", "", nil)
+	return p.pick(tried, "", "", nil, nil)
 }
 
 // PickExcludingForModel 模型感知选号：等同 PickExcluding，但对「6004 模型级冷却中的
 // 账号」进行模型豁免——请求模型与其 trigger 模型不同时视为可用（issue #31）。
 // reqModel 为空时即普通 PickExcluding（不影响既有调用语义）。
 func (p *Pool) PickExcludingForModel(tried map[string]bool, reqModel string) *auth.Auth {
-	return p.pick(tried, reqModel, "", nil)
+	return p.pick(tried, reqModel, "", nil, nil)
 }
 
 // PickExcludingForRealm 模型感知 + 分池选号：候选集先按 Realm()==realm 过滤
 // （realm 空 = 不过滤，退化为 PickExcludingForModel），再按模型健康口径判定。
 // 供 handler 在 global/cn 双域下分流（global 模型请求只路由 global 账号）。
 func (p *Pool) PickExcludingForRealm(tried map[string]bool, reqModel, realm string) *auth.Auth {
-	return p.pick(tried, reqModel, realm, nil)
+	return p.pick(tried, reqModel, realm, nil, nil)
 }
 
 // PickExcludingForRealmAllow 在 PickExcludingForRealm 基础上叠加账号白名单 allow
 // （子密钥分流）：allow 非空时只有白名单内账号参与候选与全冷却兜底；nil = 不过滤。
 // 白名单内账号全部不可用时返回 nil（**不跨白名单兜底**到其他账号），调用方据此 503。
 func (p *Pool) PickExcludingForRealmAllow(tried map[string]bool, reqModel, realm string, allow map[string]bool) *auth.Auth {
-	return p.pick(tried, reqModel, realm, allow)
+	return p.pick(tried, reqModel, realm, allow, nil)
+}
+
+// PickExcludingForRealmAllowDeny 在 …Allow 基础上再叠加账号 deny 集合（独占绑定）。
+//
+// deny 里的 uid 一律不参与候选与冷却兜底；allow 与 deny 同时命中时 deny 优先 ——
+// 调用方（server 侧 exclusiveDeny）已保证不会自相矛盾（自己独占的号不进自己的 deny），
+// 真有冲突时按"不可见"处理是更安全的默认。
+func (p *Pool) PickExcludingForRealmAllowDeny(tried map[string]bool, reqModel, realm string, allow, deny map[string]bool) *auth.Auth {
+	return p.pick(tried, reqModel, realm, allow, deny)
 }
 
 // pick 在 healthy 候选集中按权重加权随机选出账号，并记录 lastUsed（防并发撞号）。
 // reqModel 非空时把健康口径换成 healthyForModel（6004 模型豁免生效）。
 // realm 非空时候选过滤叠加 Realm()==realm 谓词（分池选号域）。
 // allow 非空时只有白名单内账号参与候选与兜底（子密钥分流），nil = 不过滤。
-func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow map[string]bool) *auth.Auth {
+// deny 非空时其中账号一律排除（独占绑定：对非绑定方不可见），nil = 不过滤。
+func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow, deny map[string]bool) *auth.Auth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -62,6 +72,9 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow map[str
 	for uid, e := range p.byUID {
 		if tried != nil && tried[uid] {
 			continue
+		}
+		if deny != nil && deny[uid] {
+			continue // 独占绑定：对非绑定方不可见
 		}
 		if allow != nil && !allow[uid] {
 			continue // 子密钥白名单：非白名单账号不参与候选
@@ -81,7 +94,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow map[str
 	if len(cands) == 0 {
 		// 全冷却兜底：无 healthy 候选时，从冷却账号里选 until 最早到期的一个
 		// （熔断/冷却共用 expiry 口径，取较早截止者）。禁用的账号永不参与兜底。
-		return p.pickEarliestExpiryLocked(tried, now, realm, allow)
+		return p.pickEarliestExpiryLocked(tried, now, realm, allow, deny)
 	}
 	// top5 短名单按权重降序截断（而非 credits 单纯降序）：否则闲置补偿根本进不了
 	// 短名单决策，低 credits 但久置的账号会永远排不进 top5。
@@ -275,11 +288,15 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow map[str
 // 分级：disabled 永不参与；CoolHard（余额耗尽，等签到的号）同样排除——调了必 402，浪费轮换并产生噪音日志；
 // CoolSoft 与熔断号允许参与（可能已恢复，失败成本仅一轮换）。
 // 被 tried 排除、在途占满的账号同样跳过（维持请求级轮换 + 租约语义）。无任何可用返回 nil。
-func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, realm string, allow map[string]bool) *auth.Auth {
+// deny 非空时其中账号不参与兜底（独占绑定：兜底也不能把别人的专属号借出去）。
+func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, realm string, allow, deny map[string]bool) *auth.Auth {
 	var best *entry
 	for uid, e := range p.byUID {
 		if tried != nil && tried[uid] {
 			continue
+		}
+		if deny != nil && deny[uid] {
+			continue // 独占绑定：对非绑定方不可见（含全冷却兜底）
 		}
 		if allow != nil && !allow[uid] {
 			continue // 子密钥白名单：非白名单账号不参与兜底
