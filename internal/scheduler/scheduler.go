@@ -55,6 +55,13 @@ type Config struct {
 	// 待办并执行，与面板「执行全部待办」按钮同管线）。调度器只管时点不管实现——
 	// panel 在 scheduler 之后构造，用 SetGrowthHook 事后挂载；nil 时到点跳过。
 	GrowthHook func()
+
+	// Gate 后台维护闸门（可选；nil = 不互斥，行为与引入前逐字一致）。
+	// 注入后，签到 / 活跃上报 / 猫猫旅行 / 保活 / 夜猫子 / 连登兑换 / 余额刷新
+	// 七类后台操作在动某个账号前先向闸门取「账号预留」，与对话路径互斥——否则
+	// 同一账号被对话与后台同时打上游，并发压力翻倍、WAF 风控更容易触发。
+	// 必须是**进程内唯一实例**：闸门的 lastFinish 是实例字段，节流基准跨任务共享才有意义。
+	Gate *BackendGate
 }
 
 // Scheduler 调度器。
@@ -101,6 +108,51 @@ func New(cfg Config) *Scheduler {
 		rearmSchedule: make(chan struct{}, 1),
 		rearmBalance:  make(chan struct{}, 1),
 	}
+}
+
+// ── 后台维护闸门接线（BackendGate，本体在 lease.go）──────────────────────
+//
+// 闸门本身不认识 pool / session（见 lease.go 的解耦约束），账号状态与跳过原因由这里
+// 翻译。把「取预留 → defer 释放」收敛到 withAccount 一处，避免七个循环各写一遍、
+// 或在某条 return 路径上漏掉释放。
+
+// gateSnapshot 把池内账号翻成闸门要的只读快照。
+//
+// thaw 标记「本次维护的目的就是把冷却号救回来」：签到（RunCheckinNow）明确要求
+// 「冷却中的账号也参与」，若把 Cooling 当跳过理由，解冻路径整条失效——故 thaw=true
+// 时不报 Cooling，只保留 禁用 / 在途 这两个真正代表「不能碰」的信号。
+// 其余后台操作照常上报 Cooling：它们与对话抢的是同一份账号身份，冷却号不该被它们
+// 顺手动用（对话侧反正也不会选它）。
+func (s *Scheduler) gateSnapshot(uid string, thaw bool) func() AccountState {
+	return func() AccountState {
+		st, ok := s.cfg.Pool.Status(uid)
+		if !ok {
+			return AccountState{Disabled: true} // 查不到 = 不该动它
+		}
+		return AccountState{
+			Disabled: st.Disabled,
+			Cooling:  st.Cooling && !thaw,
+			InFlight: st.InFlight > 0,
+		}
+	}
+}
+
+// withAccount 在后台闸门的账号预留内执行一次账号维护；闸门拒绝时直接不执行 op。
+// Gate 未注入（nil）时退化为直通，零配置行为与引入前逐字一致。
+func (s *Scheduler) withAccount(ctx context.Context, uid, label string, thaw bool, op func()) {
+	if s.cfg.Gate == nil {
+		op()
+		return
+	}
+	release, reason, ok := s.cfg.Gate.AcquireCtx(ctx, uid, s.gateSnapshot(uid, thaw))
+	if !ok {
+		// 跳过是常态（对话正在用这个号 / 号已禁用），一行够用——按原因分类的累计
+		// 计数在 GateStats 里，运维要看比例去那里看。
+		log.Printf("gate %s: 跳过（%s）", label, reason)
+		return
+	}
+	defer release()
+	op()
 }
 
 // ExpiringSoonWindow 返回当前快过期路由窗口（读取时与热配置写在 schedMu 下同步）。
@@ -390,23 +442,26 @@ func (s *Scheduler) RunCheckinNow() {
 		if a.IsGlobal() {
 			continue
 		}
-		if err := s.cfg.Upstream.DailyCheckin(a); err != nil {
-			// "今天已签到"是幂等成功（上游对重复签到返回 code!=0），不再当失败打 error 行。
-			if upstream.IsAlreadyCheckin(err) {
-				log.Printf("checkin %s: 今天已签到（幂等）", logfmt.Label(st.UID, st.Nickname))
-			} else {
-				log.Printf("checkin %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+		// thaw=true：签到本就要给冷却号解冻，冷却不是「不能碰」的理由（见 gateSnapshot）。
+		s.withAccount(context.Background(), st.UID, logfmt.Label(st.UID, st.Nickname), true, func() {
+			if err := s.cfg.Upstream.DailyCheckin(a); err != nil {
+				// "今天已签到"是幂等成功（上游对重复签到返回 code!=0），不再当失败打 error 行。
+				if upstream.IsAlreadyCheckin(err) {
+					log.Printf("checkin %s: 今天已签到（幂等）", logfmt.Label(st.UID, st.Nickname))
+				} else {
+					log.Printf("checkin %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+				}
+				// 其余业务错误也继续走余额查询
 			}
-			// 其余业务错误也继续走余额查询
-		}
-		// 分桶查余额：配置窗口内的积分单独标记，同时记录最早未来到期批次。
-		remain, total, expiring, earliestAt, earliestRemaining, err := s.cfg.Upstream.UserResourceDetailedWithExpiry(a, expiringSoon)
-		if err != nil {
-			log.Printf("user-resource %s: %v", logfmt.Label(st.UID, st.Nickname), err)
-			continue
-		}
-		s.cfg.Pool.ReenableIfCredits(st.UID, remain, total)
-		s.cfg.Pool.SetCreditsDetailed(st.UID, remain, total, expiring, earliestAt, earliestRemaining)
+			// 分桶查余额：配置窗口内的积分单独标记，同时记录最早未来到期批次。
+			remain, total, expiring, earliestAt, earliestRemaining, err := s.cfg.Upstream.UserResourceDetailedWithExpiry(a, expiringSoon)
+			if err != nil {
+				log.Printf("user-resource %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+				return
+			}
+			s.cfg.Pool.ReenableIfCredits(st.UID, remain, total)
+			s.cfg.Pool.SetCreditsDetailed(st.UID, remain, total, expiring, earliestAt, earliestRemaining)
+		})
 	}
 	s.RunStreakBonusNow()
 }
@@ -442,12 +497,14 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 			}
 		}
 		first = false
-		cid := fmt.Sprintf("wb-syan-%d", time.Now().UnixMilli())
-		if err := s.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
-			log.Printf("activity %s: %v", logfmt.Label(a.UID, a.Nickname), err)
-			continue
-		}
-		s.checkActivityStreak(a) // 上报成功 → 回读 streak 自检
+		s.withAccount(ctx, st.UID, logfmt.Label(a.UID, a.Nickname), false, func() {
+			cid := fmt.Sprintf("wb-syan-%d", time.Now().UnixMilli())
+			if err := s.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
+				log.Printf("activity %s: %v", logfmt.Label(a.UID, a.Nickname), err)
+				return
+			}
+			s.checkActivityStreak(a) // 上报成功 → 回读 streak 自检
+		})
 	}
 }
 
@@ -485,20 +542,22 @@ func (s *Scheduler) RunKeepaliveNow() {
 		if a == nil || a.RefreshTokenValue() == "" {
 			continue
 		}
-		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
-			log.Printf("keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
-			var ue *upstream.Error
-			if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
-				if s.cfg.Pool.NoteSessionDead(st.UID) {
-					log.Printf("keepalive %s: 连续 %d 次 12153 session dead — 禁用", logfmt.Label(st.UID, st.Nickname), pool.SessionDeadThreshold())
+		s.withAccount(context.Background(), st.UID, logfmt.Label(st.UID, st.Nickname), false, func() {
+			if err := s.cfg.Upstream.RefreshToken(a); err != nil {
+				log.Printf("keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
+				var ue *upstream.Error
+				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
+					if s.cfg.Pool.NoteSessionDead(st.UID) {
+						log.Printf("keepalive %s: 连续 %d 次 12153 session dead — 禁用", logfmt.Label(st.UID, st.Nickname), pool.SessionDeadThreshold())
+					}
 				}
+				return
 			}
-			continue
-		}
-		s.cfg.Pool.ClearSessionDead(st.UID) // 刷新成功清误判计数，失败不该累计
-		if err := a.SaveAtomic(); err != nil {
-			log.Printf("keepalive %s save: %v", logfmt.Label(st.UID, st.Nickname), err)
-		}
+			s.cfg.Pool.ClearSessionDead(st.UID) // 刷新成功清误判计数，失败不该累计
+			if err := a.SaveAtomic(); err != nil {
+				log.Printf("keepalive %s save: %v", logfmt.Label(st.UID, st.Nickname), err)
+			}
+		})
 	}
 }
 
@@ -520,13 +579,15 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 		wg.Add(1)
 		go func(a *auth.Auth, uid string) {
 			defer wg.Done()
-			remain, total, expiring, earliestAt, earliestRemaining, err := s.cfg.Upstream.UserResourceDetailedWithExpiry(a, expiringSoon)
-			if err != nil {
-				log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
-				return
-			}
-			s.cfg.Pool.ReenableIfCredits(uid, remain, total)
-			s.cfg.Pool.SetCreditsDetailed(uid, remain, total, expiring, earliestAt, earliestRemaining)
+			s.withAccount(context.Background(), uid, logfmt.Label(uid, a.Nickname), false, func() {
+				remain, total, expiring, earliestAt, earliestRemaining, err := s.cfg.Upstream.UserResourceDetailedWithExpiry(a, expiringSoon)
+				if err != nil {
+					log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
+					return
+				}
+				s.cfg.Pool.ReenableIfCredits(uid, remain, total)
+				s.cfg.Pool.SetCreditsDetailed(uid, remain, total, expiring, earliestAt, earliestRemaining)
+			})
 		}(a, st.UID)
 	}
 	wg.Wait()

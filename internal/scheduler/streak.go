@@ -7,6 +7,7 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"time"
@@ -29,7 +30,9 @@ func (s *Scheduler) RunStreakBonusNow() {
 		if a.IsGlobal() {
 			continue // D4 门控：global 无 CN 任务体系，不发起任何上游调用
 		}
-		s.streakBonusAccount(a)
+		s.withAccount(context.Background(), st.UID, logfmt.Label(st.UID, st.Nickname), false, func() {
+			s.streakBonusAccount(a)
+		})
 	}
 }
 

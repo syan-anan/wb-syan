@@ -162,9 +162,15 @@ func main() {
 	// 回落仓库内嵌种子；models.dev 按需拉取成功后原子写回。
 	upstream.SetModelCatalogPath(stateSibling(cfg.StateFile, "model.json"))
 
+	// 后台维护闸门（进程内唯一实例）：后台七类维护操作与对话路径互斥地消费同一批
+	// 账号，避免同号并发打上游放大 WAF 风控。0.8s 账号间隔 + 不重试（maxSkip=1），
+	// 与参考实现 account_slot 一致；lastFinish 是实例字段，故必须只构造一次。
+	backendGate := scheduler.NewBackendGate(800*time.Millisecond, 1)
+	log.Printf("后台维护闸门已启用：账号间隔 %s（与对话路径互斥，竞争即跳过）", 800*time.Millisecond)
 	sch := scheduler.New(scheduler.Config{
 		Pool:           p,
 		Upstream:       up,
+		Gate:           backendGate,
 		CheckinHours:   cfg.Schedule.CheckinHours,
 		TravelHours:    cfg.Schedule.TravelHours,
 		ActivityHours:  cfg.Schedule.ActivityHours,

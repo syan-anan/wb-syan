@@ -3,6 +3,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -61,7 +62,9 @@ func (s *Scheduler) RunTravelNow() {
 			time.Sleep(travelAccountDelay)
 		}
 		first = false
-		s.travelOne(a)
+		s.withAccount(context.Background(), st.UID, logfmt.Label(st.UID, st.Nickname), false, func() {
+			s.travelOne(a)
+		})
 	}
 }
 

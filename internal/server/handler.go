@@ -127,6 +127,9 @@ func NewHandler(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+	// Anthropic Messages 兼容入口：请求翻成 Chat 后交给同一条 chatCompletions
+	// 状态机，响应侧由 anthropicWriter 翻回 Anthropic 形态（见 messages.go）。
+	h.mux.HandleFunc("POST /v1/messages", h.withAuthAnthropic(h.messages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
