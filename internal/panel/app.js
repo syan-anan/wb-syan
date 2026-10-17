@@ -1201,21 +1201,20 @@ function renderModels() {
       if (m.supports_tool_call) caps.push('<span class="tag warn">工具</span>');
       if (m.supports_images) caps.push('<span class="tag warn">视觉</span>');
       if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
-      // 上下文 / 最大输出：原本各占一列，仅两个数字却吃掉 ~140px 横向空间。
-      // 改成角标放进模型名下。和「工具 / 视觉」分两行：能力是定性、规格是定量，
-      // 混在一行会在窄列里折成「工具 视觉 上下文 1M / 输出 131K」这种断法。
+      // 上下文 / 最大输出：表格横向已经宽了，这两个数字不再是横向空间瓶颈，
+      // 改成挂在「积分倍率」下方的小字注解 —— 模型名那一列只留能力（工具/视觉/思考），
+      // 行高不被规格数字撑开，倍率列也不会空着。
       const specs = [];
-      if (m.context_length) specs.push('<span class="tag mute" title="上下文长度">上下文 ' + sizeTag(m.context_length) + '</span>');
+      if (m.context_length) specs.push('<span class="spec-k" title="上下文长度">上下文 ' + sizeTag(m.context_length) + '</span>');
       const pv = probeOf(m.id);
       const outMax = (pv && (pv.measured || pv.claimed)) || m.max_output_tokens || 0;
-      if (outMax) specs.push('<span class="tag mute" title="实测最大输出">输出 ' + sizeTag(outMax) + '</span>');
-      // 能力/规格角标单独一层：沿用 .id 会被它的 nowrap + ellipsis 截成「工具 视觉 …」，
-      // 把新加的「上下文 1M / 输出 131K」直接吃掉。.caps 允许换行。
-      const capHtml = (caps.length ? '<div class="caps">' + caps.join(' ') + '</div>' : '') +
-        (specs.length ? '<div class="caps caps-spec">' + specs.join(' ') + '</div>' : '');
+      if (outMax) specs.push('<span class="spec-k" title="实测最大输出">输出 ' + sizeTag(outMax) + '</span>');
+      // 能力角标单独一层：沿用 .id 会被它的 nowrap + ellipsis 截成「工具 视觉 …」。
+      const capHtml = caps.length ? '<div class="caps">' + caps.join(' ') + '</div>' : '';
+      const specHtml = specs.length ? '<div class="spec-sub">' + specs.join('') + '</div>' : '';
       const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
       return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm">' + esc(m.id) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
-        '<td class="num">' + rateCell(m) + '</td>' +
+        '<td class="num">' + rateCell(m) + specHtml + '</td>' +
         '<td>' + (m.default_effort ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
         '<td class="efs" style="white-space:normal">' + effs + '</td>' +
         // 可用率：7 项横排占一列，塞在「支持的思考档位」与「上下文长度」之间的

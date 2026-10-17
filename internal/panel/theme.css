@@ -911,10 +911,10 @@ select:disabled { opacity: .5; }
    允许换行；行高按 18px 收，密集列表也不会被撑开。 */
 .who .caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .who .caps .tag { line-height: 1.5; }
-/* 规格角标（上下文 / 输出）另起一行：能力定性与规格定量分开，窄列里不会折成
-   「工具 视觉 上下文 1M / 输出 131K」这种半截换行；字号再收半档，读起来是注解。 */
-.who .caps-spec { margin-top: 2px; }
-.who .caps-spec .tag { font-size: 10.5px; opacity: .92; }
+/* 规格（上下文 / 输出）挂在「积分倍率」下方：倍率列本来就是数字列，
+   两个定量紧贴着读更顺；字号收半档、降一级墨色，读起来是注解而不是第二列数据。 */
+.num .spec-sub { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; line-height: 1.25; }
+.num .spec-sub .spec-k { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
 
 /* ── Qoder 上游页 ─────────────────────────────────────────────────── */
 .qd-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -935,6 +935,20 @@ select:disabled { opacity: .5; }
 .qd-dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--line-soft); }
 .qd-dots i.on { background: var(--ok); }
 .qd-dots .lb { font-size: 11.5px; color: var(--sub); margin-left: 6px; }
+
+/* 模型表：中等宽度窗口（笔记本窄分屏 / 侧栏展开 / 内嵌窗口）下的取舍。
+   这一档窗口装不下 6 列，「支持的思考档位」是最次要的一列（默认档 + 倍率已经
+   说明了档位能力），先让出它；表格保持最小可读宽度，配合 .tbl-wrap 的横向滚动，
+   剩下的列不会被压成看不清的窄条。 */
+@media (max-width: 1024px) {
+  #view-models .acc.md .efs,
+  #view-models .acc.md .efs-h { display: none; }
+}
+/* 只有「装不下又不到手机宽度」这一档才拉最小宽度强制横向滚动；
+   手机（≤640px）沿用既有的压缩布局，不额外多出一层滚动。 */
+@media (min-width: 641px) and (max-width: 1024px) {
+  #view-models table.acc.md { min-width: 620px; }
+}
 
 @media (max-width: 640px) {
   /* 1) 解除强制最小宽度 */
