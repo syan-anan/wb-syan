@@ -939,14 +939,28 @@ func (m *Manager) fetchAccount(ctx context.Context, s *Session, token, domain st
 }
 
 // hasKeycloakSession 会话建立的判据是 cookie（KEYCLOAK_SESSION / KEYCLOAK_IDENTITY）。
+// keycloakSessionPaths Keycloak 会话 cookie 的作用域路径。
+//
+// Keycloak 下发的 KEYCLOAK_SESSION / KEYCLOAK_IDENTITY 带
+// Path=/auth/realms/copilot/（实测 HAR #114 的 Set-Cookie 原文）。Go 的 cookiejar
+// 按路径过滤，用根路径去查根本拿不到这些 cookie —— 登录明明成功也会被判成
+// "未建立登录会话"。所以按 realm 路径查；根路径保留兜底，换 realm 时不至于再瞎一次。
+var keycloakSessionPaths = []string{"/auth/realms/copilot/", "/"}
+
 func (s *Session) hasKeycloakSession(host string) bool {
-	u, err := url.Parse(host)
-	if err != nil || s.client.Jar == nil {
+	if s.client == nil || s.client.Jar == nil {
 		return false
 	}
-	for _, c := range s.client.Jar.Cookies(u) {
-		if c.Name == "KEYCLOAK_SESSION" || c.Name == "KEYCLOAK_IDENTITY" {
-			return true
+	base := strings.TrimSuffix(host, "/")
+	for _, p := range keycloakSessionPaths {
+		u, err := url.Parse(base + p)
+		if err != nil {
+			continue
+		}
+		for _, c := range s.client.Jar.Cookies(u) {
+			if c.Name == "KEYCLOAK_SESSION" || c.Name == "KEYCLOAK_IDENTITY" {
+				return true
+			}
 		}
 	}
 	return false
