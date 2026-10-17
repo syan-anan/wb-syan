@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"github.com/syan-anan/wb-syan/internal/keys"
+
+	"github.com/syan-anan/wb-syan/internal/upstream"
 )
 
 // ---------------------------------------------------------------------------
@@ -64,6 +66,17 @@ func anthropicErrorBodyHint(status int, msg, hint string) []byte {
 	e := map[string]any{
 		"type":    anthropicErrorType(status),
 		"message": msg,
+	}
+	// 三层诊断的第二层（与 OpenAI 侧 writeOpenAIErrorHint 同口径）：业务码 +
+	// 客户端中文解释。Anthropic 客户端只读 type/message，多余键被忽略。
+	if n, cm, hit := upstream.ExplainBody(msg); n != 0 {
+		e["upstream_code"] = n
+		if hit {
+			e["client_message"] = cm.Message
+			if cm.Detail != "" {
+				e["client_detail"] = cm.Detail
+			}
+		}
 	}
 	if hint != "" {
 		e["gateway_hint"] = hint

@@ -28,6 +28,19 @@ type ModelStat struct {
 	AvgLatencyMs float64     `json:"avg_latency_ms"`
 	AvgTPS       float64     `json:"avg_tokens_per_second"`
 	Slots        []ModelSlot `json:"slots"`
+	// —— 用量口径（与上游 WorkBuddy 面板对齐的四态，别混成一个 0）——
+	// 官方额度是**账号级**的（pool.Status.credits / credits_total）；模型级只有
+	// 本网关的实测观测。所以模型页要把三件事分开说：
+	//
+	//	Credits        窗口内实测消耗合计（上游 usage.credit 累加）
+	//	CreditSamples  有成本观测的请求数：0 → 「未知」；>0 且 Credits=0 → 「实测免费」
+	//	               （这是真实结论，不是数据缺失——两者绝不能显示成同一句）
+	//	TokensRecorded / TokensMissing  有 / 无 token 明细的请求数：后者非 0 →
+	//	               「未记录」（上游没回 usage），不是「0 token」
+	Credits        float64 `json:"credits"`
+	CreditSamples  int64   `json:"credit_samples"`
+	TokensRecorded int64   `json:"tokens_recorded"`
+	TokensMissing  int64   `json:"tokens_missing"`
 }
 
 // ModelStats 按模型聚合可用率：今日 + 近 days 天两个窗口，外加一条状态条
@@ -93,6 +106,18 @@ func (r *Recorder) ModelStats(now time.Time, days, slots int) []ModelStat {
 		}
 		if !ts.Before(dayFrom) {
 			a.st.WindowReq += b.Req
+			a.st.Credits += b.Cr
+			a.st.CreditSamples += b.CrN
+			// 老桶（加 TokN 之前落盘的）没有明细计数，但 PT/CT/TT 有累计值——
+			// 按「有明细」处理，避免历史数据被误报成「全部未记录」。
+			recorded := b.TokN
+			if recorded == 0 && (b.PT > 0 || b.CT > 0 || b.TT > 0) {
+				recorded = b.Req
+			}
+			a.st.TokensRecorded += recorded
+			if miss := b.Req - recorded; miss > 0 {
+				a.st.TokensMissing += miss
+			}
 			a.st.WindowErr += b.Err
 			a.lat += b.LatMs
 			a.latN += b.LatN

@@ -83,11 +83,16 @@ type Status struct {
 	RateLimitedModels []RateLimitedModel `json:"rate_limited_models,omitempty"`
 	// Realm 账号域（cn/global，auth.Realm() 计算值；含 global.enabled 开关闸）。
 	// 供面板/状态接口按域分组展示。
-	Realm           string     `json:"realm,omitempty"`
+	Realm string `json:"realm,omitempty"`
 	// AddedAt 账号加入池的时间（Unix 秒）。面板账号池默认按它升序排列；历史账号由
 	// auths/*.json 的文件 mtime 一次性回填（见 upsertLocked），回填后固定写入
 	// state.json，不再随 token 刷新（重写 auth 文件）而漂移。
-	AddedAt         int64      `json:"added_at,omitempty"`
+	AddedAt int64 `json:"added_at,omitempty"`
+	// Priority 面板手动排序优先级（上移 +1 / 下移 -1 / 恢复自动 0）。非零时该账号进入
+	// 「手动档」，优先于全部自动策略（成本分层 / 最早到期 / 加权随机 / 闲置补偿）
+	// 参与选号；健康、冷却、在途上限、独占绑定、模型冷却等硬过滤照常生效。
+	// 0 = 未手动干预（默认）。面板 ↑↓ 调整，落盘省略零值。
+	Priority        int        `json:"priority,omitempty"`
 	Disabled        bool       `json:"disabled"`
 	DisabledReason  string     `json:"disabled_reason,omitempty"` // 仅 disabled 账号：禁用原因（运维可见）
 	SuccessCount    int64      `json:"success_count,omitempty"`
@@ -234,6 +239,10 @@ type entry struct {
 	// 落盘/恢复按 modelCostTTL 惰性过滤，陈旧观测不复活。
 	modelCost map[string]modelCostEntry
 	// inFlight 单账号在途请求数（运行态，不持久化）。用 atomic 避免 Pick 热路径拿写锁。
+	// priority 面板手动排序优先级（语义见 Status.Priority）：非零即「手动档」，
+	// 高于全部自动选号策略。持久化（stateAccount.Priority），重启不丢人工排序。
+	// 只由 AdjustPriority / ClearPriority 在写锁内改动。
+	priority int
 	inFlight atomic.Int64
 }
 
@@ -445,6 +454,9 @@ type stateAccount struct {
 	// 重新付学费探测。落盘/恢复均按 modelCostTTL 惰性过滤（6h 外不写不恢复——
 	// 陈旧价格不复活）；恢复侧剔除非法值（负 per1k/零 LastSeen 的结构破损条目）。
 	ModelCosts map[string]stateModelCost `json:"model_costs,omitempty"`
+	// Priority 面板手动排序优先级（见 Status.Priority / entry.priority）：非零即
+	// 手动档，高于全部自动选号策略。持久化以保留人工排序（omitempty：0 = 未干预）。
+	Priority int `json:"priority,omitempty"`
 }
 
 // stateModelCooldown 单个 (账号, 模型) 的模型级独立冷却持久化记录，与运行态

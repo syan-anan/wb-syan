@@ -27,22 +27,28 @@ import (
 // keyView 子密钥的对外视图：只回显掩码，绝不回显明文（明文仅在创建时一次性返回）。
 // used_today / used_hour 是配额窗口内的已用请求数（运行态，来自 keys.Quota）。
 type keyView struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	KeyMasked   string   `json:"key_masked"`
-	Note        string   `json:"note,omitempty"`
-	Accounts    []string `json:"accounts"`
-	Exclusive   bool     `json:"exclusive"`
-	Models      []string `json:"models"`
-	Realms      []string `json:"realms"`
-	TimeStart   string   `json:"time_start,omitempty"`
-	TimeEnd     string   `json:"time_end,omitempty"`
-	ExpiresAt   int64    `json:"expires_at,omitempty"`
-	DailyLimit  int      `json:"daily_limit,omitempty"`
-	HourlyLimit int      `json:"hourly_limit,omitempty"`
-	Disabled    bool     `json:"disabled"`
-	UsedToday   int      `json:"used_today"`
-	UsedHour    int      `json:"used_hour"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	KeyMasked     string         `json:"key_masked"`
+	Note          string         `json:"note,omitempty"`
+	Accounts      []string       `json:"accounts"`
+	Exclusive     bool           `json:"exclusive"`
+	Models        []string       `json:"models"`
+	Realms        []string       `json:"realms"`
+	TimeStart     string         `json:"time_start,omitempty"`
+	TimeEnd       string         `json:"time_end,omitempty"`
+	ExpiresAt     int64          `json:"expires_at,omitempty"`
+	DailyLimit    int            `json:"daily_limit,omitempty"`
+	HourlyLimit   int            `json:"hourly_limit,omitempty"`
+	MaxConcurrent int            `json:"max_concurrent,omitempty"`
+	ModelDaily    map[string]int `json:"model_daily,omitempty"`
+	// ModelUsed 当日每模型已用请求数（与 ModelDaily 的键一一对应，面板展示用）。
+	ModelUsed map[string]int `json:"model_used,omitempty"`
+	// InFlight 当前在途请求数（并发上限的实时值）。
+	InFlight  int  `json:"in_flight"`
+	Disabled  bool `json:"disabled"`
+	UsedToday int  `json:"used_today"`
+	UsedHour  int  `json:"used_hour"`
 }
 
 // accountRef 供前端「绑定账号」多选展示的账号条目（不含任何凭证）。
@@ -185,9 +191,17 @@ func (p *Panel) listKeys(w http.ResponseWriter, r *http.Request) {
 			Models: orEmpty(e.Models), Realms: orEmpty(e.Realms),
 			TimeStart: e.TimeStart, TimeEnd: e.TimeEnd, ExpiresAt: e.ExpiresAt,
 			DailyLimit: e.DailyLimit, HourlyLimit: e.HourlyLimit,
+			MaxConcurrent: e.MaxConcurrent, ModelDaily: e.ModelDaily,
 		}
 		if p.cfg.KeyQuota != nil {
 			v.UsedToday, v.UsedHour = p.cfg.KeyQuota.Usage(e.ID, now)
+			v.InFlight = p.cfg.KeyQuota.InFlight(e.ID)
+			if len(e.ModelDaily) > 0 {
+				v.ModelUsed = make(map[string]int, len(e.ModelDaily))
+				for m := range e.ModelDaily {
+					v.ModelUsed[m] = p.cfg.KeyQuota.ModelUsage(e.ID, m, now)
+				}
+			}
 		}
 		out = append(out, v)
 	}
@@ -227,15 +241,17 @@ func (p *Panel) accountRefs(w http.ResponseWriter, r *http.Request) {
 
 // keyLimits 新建/修改共用的约束字段。
 type keyLimits struct {
-	Accounts    []string
-	Exclusive   bool
-	Models      []string
-	Realms      []string
-	TimeStart   string
-	TimeEnd     string
-	ExpiresAt   int64
-	DailyLimit  int
-	HourlyLimit int
+	Accounts      []string
+	Exclusive     bool
+	Models        []string
+	Realms        []string
+	TimeStart     string
+	TimeEnd       string
+	ExpiresAt     int64
+	DailyLimit    int
+	HourlyLimit   int
+	MaxConcurrent int
+	ModelDaily    map[string]int
 }
 
 // exclusiveConflict 返回独占绑定冲突说明（空 = 无冲突）。selfID 为编辑中的条目
@@ -279,6 +295,36 @@ func sanitizeLimits(l keyLimits) (keyLimits, error) {
 	if l.DailyLimit < 0 || l.HourlyLimit < 0 {
 		return l, errors.New("配额不能为负（0 = 不限）")
 	}
+	if l.MaxConcurrent < 0 {
+		return l, errors.New("并发数不能为负（0 = 不限）")
+	}
+	if len(l.ModelDaily) > 0 {
+		clean := make(map[string]int, len(l.ModelDaily))
+		for m, n := range l.ModelDaily {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				return l, errors.New("模型日限的模型名不能为空")
+			}
+			if len(m) > 120 {
+				return l, errors.New("模型日限的模型名过长")
+			}
+			if n < 0 {
+				return l, errors.New("模型日限不能为负（0 = 不限）")
+			}
+			if n == 0 {
+				continue // 0 = 不限制：不落盘，避免配置里堆一堆空键
+			}
+			clean[m] = n
+		}
+		if len(clean) > 50 {
+			return l, errors.New("模型日限最多 50 条")
+		}
+		if len(clean) == 0 {
+			l.ModelDaily = nil
+		} else {
+			l.ModelDaily = clean
+		}
+	}
 	l.Accounts = sanitizeAccounts(l.Accounts)
 	l.Models = sanitizeModels(l.Models)
 	l.Realms = sanitizeRealms(l.Realms)
@@ -293,18 +339,20 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name        string   `json:"name"`
-		Key         string   `json:"key"`
-		Note        string   `json:"note"`
-		Accounts    []string `json:"accounts"`
-		Exclusive   bool     `json:"exclusive"`
-		Models      []string `json:"models"`
-		Realms      []string `json:"realms"`
-		TimeStart   string   `json:"time_start"`
-		TimeEnd     string   `json:"time_end"`
-		ExpiresAt   int64    `json:"expires_at"`
-		DailyLimit  int      `json:"daily_limit"`
-		HourlyLimit int      `json:"hourly_limit"`
+		Name          string         `json:"name"`
+		Key           string         `json:"key"`
+		Note          string         `json:"note"`
+		Accounts      []string       `json:"accounts"`
+		Exclusive     bool           `json:"exclusive"`
+		Models        []string       `json:"models"`
+		Realms        []string       `json:"realms"`
+		TimeStart     string         `json:"time_start"`
+		TimeEnd       string         `json:"time_end"`
+		ExpiresAt     int64          `json:"expires_at"`
+		DailyLimit    int            `json:"daily_limit"`
+		HourlyLimit   int            `json:"hourly_limit"`
+		MaxConcurrent int            `json:"max_concurrent"`
+		ModelDaily    map[string]int `json:"model_daily"`
 	}
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "解析请求失败: "+err.Error())
@@ -319,6 +367,7 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		Accounts: body.Accounts, Exclusive: body.Exclusive, Models: body.Models, Realms: body.Realms,
 		TimeStart: body.TimeStart, TimeEnd: body.TimeEnd, ExpiresAt: body.ExpiresAt,
 		DailyLimit: body.DailyLimit, HourlyLimit: body.HourlyLimit,
+		MaxConcurrent: body.MaxConcurrent, ModelDaily: body.ModelDaily,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -354,6 +403,7 @@ func (p *Panel) createKey(w http.ResponseWriter, r *http.Request) {
 		Accounts: lim.Accounts, Exclusive: lim.Exclusive, Models: lim.Models, Realms: lim.Realms,
 		TimeStart: lim.TimeStart, TimeEnd: lim.TimeEnd, ExpiresAt: lim.ExpiresAt,
 		DailyLimit: lim.DailyLimit, HourlyLimit: lim.HourlyLimit,
+		MaxConcurrent: lim.MaxConcurrent, ModelDaily: lim.ModelDaily,
 	}
 	if err := p.cfg.SaveKeys(append(entries, entry)); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存失败: "+err.Error())
@@ -378,18 +428,20 @@ func (p *Panel) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	var body struct {
-		Name        *string   `json:"name"`
-		Note        *string   `json:"note"`
-		Accounts    *[]string `json:"accounts"`
-		Exclusive   *bool     `json:"exclusive"`
-		Models      *[]string `json:"models"`
-		Realms      *[]string `json:"realms"`
-		TimeStart   *string   `json:"time_start"`
-		TimeEnd     *string   `json:"time_end"`
-		ExpiresAt   *int64    `json:"expires_at"`
-		DailyLimit  *int      `json:"daily_limit"`
-		HourlyLimit *int      `json:"hourly_limit"`
-		Disabled    *bool     `json:"disabled"`
+		Name          *string         `json:"name"`
+		Note          *string         `json:"note"`
+		Accounts      *[]string       `json:"accounts"`
+		Exclusive     *bool           `json:"exclusive"`
+		Models        *[]string       `json:"models"`
+		Realms        *[]string       `json:"realms"`
+		TimeStart     *string         `json:"time_start"`
+		TimeEnd       *string         `json:"time_end"`
+		ExpiresAt     *int64          `json:"expires_at"`
+		DailyLimit    *int            `json:"daily_limit"`
+		HourlyLimit   *int            `json:"hourly_limit"`
+		MaxConcurrent *int            `json:"max_concurrent"`
+		ModelDaily    *map[string]int `json:"model_daily"`
+		Disabled      *bool           `json:"disabled"`
 	}
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "解析请求失败: "+err.Error())
@@ -462,6 +514,35 @@ func (p *Panel) updateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		e.HourlyLimit = *body.HourlyLimit
+	}
+	if body.MaxConcurrent != nil {
+		if *body.MaxConcurrent < 0 {
+			writeErr(w, http.StatusBadRequest, "并发数不能为负（0 = 不限）")
+			return
+		}
+		e.MaxConcurrent = *body.MaxConcurrent
+	}
+	if body.ModelDaily != nil {
+		clean := make(map[string]int, len(*body.ModelDaily))
+		for m, n := range *body.ModelDaily {
+			m = strings.TrimSpace(m)
+			if m == "" || len(m) > 120 || n < 0 {
+				writeErr(w, http.StatusBadRequest, "模型日限格式错误（模型名非空、次数 ≥ 0）")
+				return
+			}
+			if n > 0 {
+				clean[m] = n
+			}
+		}
+		if len(clean) > 50 {
+			writeErr(w, http.StatusBadRequest, "模型日限最多 50 条")
+			return
+		}
+		if len(clean) == 0 {
+			e.ModelDaily = nil
+		} else {
+			e.ModelDaily = clean
+		}
 	}
 	if body.Disabled != nil {
 		e.Disabled = *body.Disabled

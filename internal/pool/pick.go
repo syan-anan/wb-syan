@@ -90,6 +90,24 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string, allow, deny m
 			continue // 在途占满：跳过（max=0 不限时不触发）
 		}
 		cands = append(cands, e)
+		// 手动优先级档（面板 ↑↓ / 恢复自动）：与自动策略的关系见 priority.go。
+		// 位置刻意放在这里 —— 上方已完成全部**资格**过滤（tried / deny / allow /
+		// 域 / 健康 / 模型冷却 / 在途上限），故手动档只做「在有资格的账号里缩减候选
+		// 集」，不产生也不取消任何资格；全员未干预时 on=false，零开销、行为与既有
+		// 完全一致（零回归）。
+		if maxP, on := manualPriorityLocked(cands); on {
+			kept := make([]*entry, 0, len(cands))
+			for _, e := range cands {
+				if e.priority == maxP {
+					kept = append(kept, e)
+				}
+			}
+			// 极端情形（池里只剩被下移的账号：全员 < 0 而 maxP==0，没有 0 档可选）：
+			// 保持原候选集。清空会误触发下方的全冷却兜底。
+			if len(kept) > 0 {
+				cands = kept
+			}
+		}
 	}
 	if len(cands) == 0 {
 		// 全冷却兜底：无 healthy 候选时，从冷却账号里选 until 最早到期的一个

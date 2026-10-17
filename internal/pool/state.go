@@ -487,6 +487,12 @@ func (p *Pool) ListSorted(mode string) []Status {
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		// 手动优先级（面板 ↑↓）是列表排序的第一档：与选号的手动档同口径——
+		// 非零者按 priority 降序排（正数置顶、负数沉底），未干预的 0 挡在其间；
+		// 同档内仍走既有维度（SortAdded 添加时间升序 / SortRealm 先域后时间）。
+		if a.Priority != b.Priority {
+			return a.Priority > b.Priority
+		}
 		if mode == SortRealm {
 			if ra, rb := realmRank(a.Realm), realmRank(b.Realm); ra != rb {
 				return ra < rb
@@ -509,6 +515,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		// 普通软冷却（无模型级表）/硬冷却不产生台账（零回归）。
 		RateLimitedModels:        p.rateLimitedModelsLocked(e, now),
 		AddedAt:                  e.addedAt,
+		Priority:                 e.priority,
 		Realm:                    e.a.Realm(),
 		Nickname:                 e.a.Nickname,
 		Credits:                  e.credits,

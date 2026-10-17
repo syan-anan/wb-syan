@@ -24,7 +24,7 @@ func TestModelStatsWindows(t *testing.T) {
 		}, true)
 		// Add 每次只记 1 次请求；要造 N 次就再补 N-1 次失败样本太啰嗦，
 		// 直接用内部桶补足计数（测试同包，可用私有字段）。
-		key := scope + "|cn|uid1|" + model + "|codex"
+		key := scope + "|cn|uid1|" + model + "|codex|"
 		b := rec.buckets[key]
 		if b == nil {
 			t.Fatalf("bucket %q 不存在", key)
@@ -111,7 +111,7 @@ func TestModelStatsSort(t *testing.T) {
 		n     int64
 	}{{"small", 3}, {"big", 30}, {"mid", 12}} {
 		rec.Add(now, "cn", "uid1", c.model, "codex", Delta{TotalTokens: 1, HasTotal: true}, true)
-		key := "h:2026-10-03T14|cn|uid1|" + c.model + "|codex"
+			key := "h:2026-10-03T14|cn|uid1|" + c.model + "|codex|"
 		rec.buckets[key].Req = c.n
 	}
 	got := rec.ModelStats(now, 30, 24)

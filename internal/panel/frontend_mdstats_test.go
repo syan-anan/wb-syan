@@ -51,7 +51,7 @@ const chk = (cond, msg) => { if (!cond) bad.push(msg); };
 // 1) 没有观测 → 整条「—」，不能出现 100%
 ctx.mdStats = {};
 let h = T.mdStatStrip({ id: 'global:foo' });
-chk((h.match(/—/g) || []).length === 7, '无观测时应出 7 个「—」，实得 ' + (h.match(/—/g) || []).length);
+chk((h.match(/—/g) || []).length === 9, '无观测时应出 9 个「—」（七项指标 + 消耗 + 明细），实得 ' + (h.match(/—/g) || []).length);
 chk(h.indexOf('100.0%') < 0, '无观测时不能伪造 100%');
 chk(h.indexOf('mdst') >= 0, '无观测时也要有 .mdst 容器');
 
@@ -99,6 +99,26 @@ h = T.mdStatStrip({ id: 'bad' });
 chk(h.indexOf('mds-v bad') >= 0, '低于 90% 的可用率应加 bad 类');
 chk(h.indexOf('70.0%') >= 0, '可用率应为 70.0%');
 chk(h.indexOf('>—<') >= 0, '没有延迟/吞吐样本时应显示「—」');
+
+
+// 5) 用量口径四态：未知 / 免费 / 有消耗 / token 未记录与部分记录
+ctx.mdStats = { u: { model: 'u', today_req: 1, today_err: 0, window_req: 1, window_err: 0,
+  slots: [], credits: 0, credit_samples: 0, tokens_recorded: 0, tokens_missing: 1 } };
+h = T.mdStatStrip({ id: 'u' });
+chk(h.indexOf('未知') >= 0, '无成本观测应显示「未知」');
+chk(h.indexOf('未记录') >= 0, '无 token 观测应显示「未记录」');
+chk(h.indexOf('免费') < 0, '无成本观测不能当成免费');
+chk(h.indexOf('0 cr') < 0, '无成本观测不能显示 0 cr');
+ctx.mdStats = { u: { model: 'u', today_req: 2, today_err: 0, window_req: 2, window_err: 0,
+  slots: [], credits: 0, credit_samples: 3, tokens_recorded: 2, tokens_missing: 0 } };
+h = T.mdStatStrip({ id: 'u' });
+chk(h.indexOf('免费') >= 0, '实测 0 消耗应显示「免费」');
+chk(h.indexOf('2') >= 0, 'token 明细应显示记录条数');
+ctx.mdStats = { u: { model: 'u', today_req: 2, today_err: 0, window_req: 2, window_err: 0,
+  slots: [], credits: 12.5, credit_samples: 4, tokens_recorded: 2, tokens_missing: 1 } };
+h = T.mdStatStrip({ id: 'u' });
+chk(h.indexOf('12.5 cr') >= 0, '实测消耗应显示 12.5 cr，实得 ' + h.slice(0, 800));
+chk(h.indexOf('2/3') >= 0, '部分记录应显示 已记录/总数');
 
 if (bad.length) { console.log('FAIL'); bad.forEach(m => console.log(' - ' + m)); process.exit(1); }
 console.log('OK');`

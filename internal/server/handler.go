@@ -27,8 +27,15 @@ import (
 
 // Config handler 依赖。
 type Config struct {
-	Pool      *pool.Pool
-	Upstream  *upstream.Client
+	Pool     *pool.Pool
+	Upstream *upstream.Client
+	// Qoder 第二条上游（可选；nil = 未配置，qoder: 前缀模型返回 501）。
+	// 与 Upstream 完全独立：不进 pool、不参与 WorkBuddy 选号/冷却/粘性。
+	Qoder *upstream.QoderPool
+	// Routes 模型别名 / 降级链 / 上游时段闸门（可选；nil = 全部恒等）。
+	Routes *RouteTable
+	// Compat 通用 OpenAI 兼容上游池（可选；nil = 只支持 workbuddy + qoder）。
+	Compat    *upstream.OpenAICompatPool
 	APIKey    string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
 	MaxRotate int    // 单请求最多换号次数，默认 3
 	// Session 会话粘性路由器（可选；nil = 关闭粘性，纯 Pick 轮换）。
@@ -236,6 +243,11 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		},
 		"sticky_sessions": sticky,
 		"redis_mode":      redisMode,
+		// 多上游视图：WorkBuddy 走 pool，Qoder 走独立 PAT 池。面板据此展示
+		// "这条网关到底连了几家" —— 之前只有一家时不需要这个字段。
+		"upstreams": h.upstreamSummary(),
+		// 路由策略快照（别名 / 降级 / 时段），面板只读展示。
+		"routing": h.routingSummary(),
 		// cost_explore 事件与 per-model 时间戳（时间值由 encoding/json 写 RFC3339）。
 		"cost_explore": map[string]any{
 			"events_total": exploreEvents,
@@ -454,6 +466,14 @@ func (h *Handler) modelList() []map[string]any {
 			out = append(out, entry)
 		}
 	}
+	// Qoder 上游模型（qoder: 前缀）。未配置 Qoder 时不列，避免客户端选到必然 501 的模型。
+	if h.cfg.Qoder != nil {
+		out = append(out, qoderModelEntries()...)
+	}
+	// 通用 OpenAI 兼容上游模型（provider:model）。未配置时不列。
+	if h.cfg.Compat != nil {
+		out = append(out, h.compatModelEntries()...)
+	}
 	return out
 }
 
@@ -552,6 +572,87 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &peek)
 
+	// 模型别名展开（在一切路由判定之前）：客户端写 fast，网关按别名表换成
+	// "cn:glm-5.2" 这类真实路由名。别名目标同样受子密钥白名单约束——否则受限
+	// key 能靠别名绕过模型白名单。
+	if h.cfg.Routes != nil && peek.Model != "" {
+		expanded, aerr := h.cfg.Routes.Expand(peek.Model)
+		if aerr != nil {
+			writeOpenAIError(w, http.StatusInternalServerError, "alias_error", aerr.Error())
+			return
+		}
+		if expanded != peek.Model {
+			if !aliasAllowedForIdentity(expanded, keys.FromContext(r.Context())) {
+				writeOpenAIError(w, http.StatusForbidden, "key_restricted",
+					"alias "+peek.Model+" 指向的模型不在该密钥允许范围内")
+				return
+			}
+			body = rewriteModel(body, expanded)
+			peek.Model = expanded
+		}
+	}
+
+	// 上游时段闸门：整条上游在配置时段外直接 503，不消耗账号也不打上游。
+	// 只拦"用户显式指定的上游"；降级候选的时段由 routeChain 过滤（见下）。
+	if h.cfg.Routes != nil && peek.Model != "" {
+		if up := upstreamOf(peek.Model); !h.cfg.Routes.AllowedNow(up, time.Now()) {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_window_closed",
+				"上游 "+up+" 当前不在服务时段内（检查 models.upstream_hours 配置）")
+			return
+		}
+	}
+
+	// 调用方身份提前取出：WorkBuddy / Qoder / OpenAI 兼容三条上游共用同一份
+	// 子密钥约束。此前 compat/qoder 分支在鉴权判定之前就 return，受限密钥
+	// 只要换个 model 前缀就能绕过模型白名单与配额——这是一个真实的越权口子。
+	id := keys.FromContext(r.Context())
+
+	// 通用 OpenAI 兼容上游：前缀命中配置里的 provider 名时直接转发。
+	// 放在 Qoder 之前判：qoder 是保留前缀，不会出现在 Compat 里。
+	if h.cfg.Compat != nil {
+		if prov, bare, ok := h.cfg.Compat.Split(peek.Model); ok {
+			// 用全名（provider:model）判白名单：面板里写 "groq:llama-3.3" 也能命中，
+			// 写裸名同样生效（AllowsModel 会同时比对裸名）。
+			if reason := h.keyAccessDeniedAnyRealm(id, peek.Model); reason != "" {
+				log.Printf("compat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
+				writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+				return
+			}
+			release, reason := h.acquireKeySlot(id)
+			if reason != "" {
+				writeOpenAIError(w, http.StatusTooManyRequests, "key_concurrency", reason)
+				return
+			}
+			if release != nil {
+				defer release()
+			}
+			h.compatChat(w, r, body, prov, bare, peek.Stream)
+			return
+		}
+	}
+
+	// Qoder 上游分流：model 形如 "qoder:<模型名>" 时整条请求交给 Qoder，
+	// 不进 WorkBuddy 的选号/粘性/冷却链路（两条上游账号体系完全不同）。
+	// 必须在 resolveModel 之前判：resolveModel 只认 cn:/global: 两种前缀。
+	if strings.HasPrefix(peek.Model, qoderModelPrefix) {
+		qModel := strings.TrimPrefix(peek.Model, qoderModelPrefix)
+		if reason := h.keyAccessDeniedAnyRealm(id, peek.Model); reason != "" {
+			log.Printf("qoder: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
+			writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+			return
+		}
+		release, reason := h.acquireKeySlot(id)
+		if reason != "" {
+			writeOpenAIError(w, http.StatusTooManyRequests, "key_concurrency", reason)
+			return
+		}
+		if release != nil {
+			defer release()
+		}
+		h.qoderChat(w, r, body, qModel, peek.Stream)
+		return
+	}
+
 	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
 	// bareModel 用于选号/粘性/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
 	// 裸名 → ("cn", 原串)，CN 现状零回归。
@@ -559,13 +660,23 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// 调用方身份（主密钥 / 子密钥）：子密钥可绑定账号白名单，选号与粘性都限定在
 	// 白名单内（分流管理）。withAuth 已注入；缺省主身份（不限定账号）。
-	id := keys.FromContext(r.Context())
+	// id 已在分支之前取出（三条上游共用），这里不再重复解析。
 	// 子密钥分流约束（模型 / 域 / 时段 / 有效期 / 请求配额）：任一不通过就地 403，
 	// 不进入选号与上游调用。账号白名单不在这里判（选号侧 AllowSet 兜底，避免双口径）。
 	if reason := h.keyAccessDenied(id, realm, bareModel); reason != "" {
 		log.Printf("chat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
 		writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
 		return
+	}
+	// 在途并发名额：与模型/配额判定分开，因为要持有到请求结束（defer）。
+	keyRelease, why := h.acquireKeySlot(id)
+	if why != "" {
+		log.Printf("chat: 子密钥 %s（%s）并发已满: %s", id.KeyID, id.Name, why)
+		writeOpenAIError(w, http.StatusTooManyRequests, "key_concurrency", why)
+		return
+	}
+	if keyRelease != nil {
+		defer keyRelease()
 	}
 	allow := id.AllowSet()
 	// 独占绑定：别人绑定的专属号对本次调用整体不可见（选号 / 粘性 / 兜底一并挡）。
@@ -673,7 +784,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if a, ok := h.cfg.Pool.Status(uid); ok && a.Realm != "" {
 				realm = a.Realm
 			}
-			h.cfg.Usage.Add(time.Now(), realm, uid, delta.Model, agentClient, usage.Delta{
+			h.cfg.Usage.AddGrouped(time.Now(), realm, uid, delta.Model, agentClient, id.Group, usage.Delta{
 				PromptTokens:     delta.PromptTokens,
 				HasPromptTokens:  delta.HasPromptTokens,
 				CompletionTokens: delta.CompletionTokens,
@@ -686,6 +797,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				HasTPS:           delta.HasTokensPerSecond,
 				Credits:          credit,
 				HasCredits:       hasCredit,
+				// 计费量 = 实测消耗 × 调用方倍率。只有 hasCredit 时才计费：
+				// 上游没给 credit 就无从定价，不拿 token 数反推（那是猜价，
+				// 猜出来的账单对不上账比没有账单更麻烦）。
+				BilledCredits: billedCredits(credit, id.EffectiveRate()),
+				HasBilled:     hasCredit,
 			}, delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens)
 		}
 	}
@@ -742,6 +858,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
 
+	// 降级链：首元素是当前模型，后续是按序尝试的备选（已按上游时段过滤）。
+	// 只有"账号全不可用"这种可重试的失败才跳降级；内容拦截/prompt 过长等
+	// 确定性问题不降级——换个模型同样会失败，只会白烧一次额度。
+	routeChain := []string{peek.Model}
+	if h.cfg.Routes != nil && peek.Model != "" {
+		routeChain = h.cfg.Routes.FilterChain(h.cfg.Routes.Chain(peek.Model), time.Now())
+	}
+	chainIdx := 0
+
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
@@ -760,6 +885,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			acct = h.cfg.Pool.PickExcludingForRealmAllowDeny(tried, bareModel, realm, allow, deny)
 		}
 		if acct == nil {
+			// 账号全不可用 → 尝试降级链的下一个模型。
+			if chainIdx+1 < len(routeChain) {
+				chainIdx++
+				next := routeChain[chainIdx]
+				log.Printf("WARN: [server] model fallback %s -> %s (no healthy account)",
+					peek.Model, next)
+				if strings.HasPrefix(next, qoderModelPrefix) {
+					// 降级目标是另一条上游：直接交给 qoderChat，不进选号池。
+					h.qoderChat(w, r, body, strings.TrimPrefix(next, qoderModelPrefix), peek.Stream)
+					return
+				}
+				peek.Model = next
+				realm, bareModel = resolveModel(next)
+				body = rewriteModel(body, bareModel)
+				tried = map[string]bool{}
+				i = -1 // for 的 i++ 会推回 0：用满一轮新的换号预算
+				continue
+			}
 			st.status = http.StatusServiceUnavailable
 			break
 		}
@@ -935,6 +1078,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			sErr := upstream.StreamHint(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
 			}))
+			// 客户端在首包前取消时，StreamHint 会因为写失败/ctx 取消提前返回；
+			// 这里显式关闭上游 body，避免连接和读取协程挂到下一轮对话（1.0.6
+			// 「取消后清理上游请求」的同款修复）。正常收尾时 Close 是空操作。
+			rc.Close()
 			if upstream.IsEmptyStreamError(sErr) {
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
 				// 兜底（HTTP 头已发出只能 200），但这是上游缺陷不是成功——日志/
@@ -1047,6 +1194,16 @@ func promptTooLongMessage(body string) string {
 	return body
 }
 
+// billedCredits 把实测积分按调用方倍率换算成计费量。
+//
+// rate 由 keys.Identity.EffectiveRate() 归一过（<=0/NaN 已变成 1.0），这里不再判空
+// ——倍率的"未配置"语义只在 keys 包定义一次，散到各处迟早有一个写成 0 倍。
+// 负数消耗（上游脏数据）原样乘：脏数据要能被看见而不是被悄悄抹平，
+// 抹平了就永远发现不了上游在吐负数。
+func billedCredits(credit, rate float64) float64 {
+	return credit * rate
+}
+
 // usageCreditTotal 从聚合响应取 usage.credit 与 total_tokens（成本台账非流式入口）。
 // 任一字段缺失/非法 → ok=false（不记录）。
 func usageCreditTotal(resp map[string]any) (credit float64, total int, ok bool) {
@@ -1118,6 +1275,14 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 不需要异步核查（冗余）。立即换号。
 		h.cfg.Pool.CooldownUntilTomorrow4AM(uid, "余额不足")
 	case upstream.ErrSoftRate:
+		// 6008 = 账号当日请求上限：冷却到下一个本地零点。这条必须在 6004 之前判，
+		// 否则带重置文案的 6008 会被当成普通账号级限流做指数退避（几分钟后又去撞墙，
+		// 每撞一次都白烧一次上游调用）。
+		if upstream.IsDailyRequestLimit(body) {
+			midnight := nextLocalMidnight(time.Now())
+			h.cfg.Pool.CooldownSoftRate(uid, time.Until(midnight), midnight, "6008 daily request limit")
+			return
+		}
 		// 统一对齐上游重置时间：只要 body 带「将在 … 重置」，无论业务 code 是
 		// 6004 还是 11140 rate-limiting 等形态，都精确冷却到该墙钟、绝不指数堆加。
 		//   - 模型级（6004）→ CooldownSoftForModel：写 modelCooldowns[model]，切模型豁免。
@@ -1205,6 +1370,13 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 // helpers
 // ---------------------------------------------------------------------------
 
+// nextLocalMidnight 返回下一个本地零点（6008 日请求上限的重置时刻）。
+// 用 time.Date(y,m,d+1,...) 而不是 Add(24h)：跨夏令时/时区变更时仍是「明天 00:00」。
+func nextLocalMidnight(now time.Time) time.Time {
+	y, m, d := now.Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, now.Location())
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	raw, _ := json.Marshal(v)
 	w.Header().Set("Content-Type", "application/json")
@@ -1229,22 +1401,37 @@ func writeOpenAIError(w http.ResponseWriter, status int, code, msg string) {
 // 滑过。抖动复用 backoff.go jitterDur（单一来源）。
 const wafCooldownBase = 60 * time.Second
 
-// writeOpenAIErrorHint 同 writeOpenAIError，另在 error 对象上附加
-// error.gateway_hint（hint 为空串时不带字段——未覆盖形态不编造）。
-// message 仍是上游原文透传（hint 只做并列补充，绝不替换/包装 message）。
+// writeOpenAIErrorHint 同 writeOpenAIError，另在 error 对象上附加**三层诊断**：
+//
+//	第一层 本网关判断   error.gateway_hint（英文，网关视角「你该怎么做」）
+//	第二层 客户端解释   error.client_message / client_detail（中文，「这是什么意思」）
+//	第三层 上游实际证据 error.message（上游 body 原文，一字不改）+ error.upstream_code
+//
+// 三层并列、互不替换：message 永远是上游原文（5755fe3 透传原则不动），hint 与
+// 中文解释只是并排补充。任何一层判不出就**不带该字段**（不编造）——所以未覆盖
+// 形态的响应与改造前逐字节一致，零回归。
+//
+// 业务码从 msg 里解（正常路径下 msg 就是上游 body 原文）；本地调度类错误
+// （no_healthy_account 等自有文案）解不出码 → 只保留 hint，不误导成上游故障。
 func writeOpenAIErrorHint(w http.ResponseWriter, status int, code, msg, hint string) {
-	if hint == "" {
-		writeOpenAIError(w, status, code, msg)
-		return
+	errObj := map[string]any{
+		"message": msg,
+		"type":    "api_error",
+		"code":    code,
 	}
-	writeJSON(w, status, map[string]any{
-		"error": map[string]any{
-			"message":      msg,
-			"type":         "api_error",
-			"code":         code,
-			"gateway_hint": hint,
-		},
-	})
+	if hint != "" {
+		errObj["gateway_hint"] = hint
+	}
+	if n, cm, hit := upstream.ExplainBody(msg); n != 0 {
+		errObj["upstream_code"] = n
+		if hit {
+			errObj["client_message"] = cm.Message
+			if cm.Detail != "" {
+				errObj["client_detail"] = cm.Detail
+			}
+		}
+	}
+	writeJSON(w, status, map[string]any{"error": errObj})
 }
 
 // hasImagePart 报告聊天请求体是否携带多模态 image_url part（OpenAI 兼容形态

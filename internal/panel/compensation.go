@@ -17,6 +17,7 @@ package panel
 import (
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -132,24 +133,28 @@ func (p *Panel) compensationClaim(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "account not found")
 		return
 	}
+	status, credit, reason, ok := p.claimCompensation(uid, a)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": ok, "status": status, "credit": credit, "reason": reason})
+}
+
+// claimCompensation 单账号领取的核心逻辑（HTTP 与每日排程共用）。
+// 返回值 ok=false 表示「没确认领取成功」（查询失败 / 领取响应异常且回查未确认）；
+// status=claimed 且 ok=true 才是真的到账。
+func (p *Panel) claimCompensation(uid string, a *auth.Auth) (status string, credit int64, reason string, ok bool) {
 
 	// ① 先查：只读，失败就如实报错，不盲目领取。
 	before, err := p.cfg.Upstream.CompensationStatusOf(a)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "status": "error", "reason": "查询失败：" + err.Error()})
-		return
+		return "error", 0, "查询失败：" + err.Error(), false
 	}
 	if before.Claimed != nil && *before.Claimed {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "claimed", "credit": 0, "reason": "本期权益已领取"})
-		return
+		return "claimed", 0, "本期权益已领取", true
 	}
 	if before.Active == nil || !*before.Active {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "ineligible", "credit": 0, "reason": "当前暂无可领取权益"})
-		return
+		return "ineligible", 0, "当前暂无可领取权益", true
 	}
 	if upstream.CompensationEnded(before.EndTime) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "expired", "credit": 0, "reason": "已超过领取截止时间"})
-		return
+		return "expired", 0, "已超过领取截止时间", true
 	}
 
 	// ② 领取（非幂等）。
@@ -160,13 +165,9 @@ func (p *Panel) compensationClaim(w http.ResponseWriter, r *http.Request) {
 		if after, qerr := p.cfg.Upstream.CompensationStatusOf(a); qerr == nil && after.Claimed != nil && *after.Claimed {
 			p.refreshAfterCompensation(uid, a)
 			log.Printf("panel: compensation uid=%s 领取响应异常但上游已确认到账", uid)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "claimed", "credit": credit,
-				"reason": "已通过官方状态确认领取成功（原响应异常：" + claimErr.Error() + "）"})
-			return
+			return "claimed", credit, "已通过官方状态确认领取成功（原响应异常：" + claimErr.Error() + "）", true
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "status": "unknown", "credit": 0,
-			"reason": "领取未确认，已核对官方状态；稍后重试不会重复提交同一笔：" + claimErr.Error()})
-		return
+		return "unknown", 0, "领取未确认，已核对官方状态；稍后重试不会重复提交同一笔：" + claimErr.Error(), false
 	}
 
 	p.refreshAfterCompensation(uid, a)
@@ -175,7 +176,63 @@ func (p *Panel) compensationClaim(w http.ResponseWriter, r *http.Request) {
 	if credit > 0 {
 		msg = "已领取 " + itoa(credit) + " 积分"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "claimed", "credit": credit, "reason": msg})
+	return "claimed", credit, msg, true
+}
+
+// ClaimAllBenefits 遍历全部启用账号，先查后领，只对「确实可领取」的发请求。
+// 返回 (claimed, skipped, failed)。供面板「一键领取」与每日排程共用。
+//
+// 并发固定 2：领取是写操作，串行太慢（十几个号要等几分钟），并发太高又会
+// 让上游把这批请求当成异常流量。失败不重试——重试交给下一次排程。
+func (p *Panel) ClaimAllBenefits() (claimed, skipped, failed int, results []compensationResult) {
+	list := p.cfg.Pool.List()
+	sem := make(chan struct{}, 2)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	results = []compensationResult{}
+	for _, st := range list {
+		if st.Disabled {
+			skipped++
+			continue
+		}
+		a := p.cfg.Pool.AuthByUID(st.UID)
+		if a == nil {
+			skipped++
+			continue
+		}
+		wg.Add(1)
+		go func(uid, nick string, acct *auth.Auth) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			status, credit, reason, ok := p.claimCompensation(uid, acct)
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, compensationResult{
+				UID: uid, Nickname: nick, Status: status, Credit: credit,
+				Reason: reason, Claimed: status == "claimed",
+			})
+			switch {
+			case !ok:
+				failed++
+			case status == "claimed" && credit > 0:
+				claimed++
+			default:
+				skipped++
+			}
+		}(st.UID, st.Nickname, a)
+	}
+	wg.Wait()
+	sort.Slice(results, func(i, j int) bool { return results[i].UID < results[j].UID })
+	return claimed, skipped, failed, results
+}
+
+// ClaimAllHandler POST /panel/api/compensation/claim_all —— 面板「一键领取全部」。
+func (p *Panel) compensationClaimAll(w http.ResponseWriter, r *http.Request) {
+	claimed, skipped, failed, results := p.ClaimAllBenefits()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "claimed": claimed, "skipped": skipped, "failed": failed, "results": results,
+	})
 }
 
 // refreshAfterCompensation 领取成功后刷新余额与到期快照。

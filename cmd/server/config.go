@@ -74,12 +74,58 @@ type Config struct {
 		KeepaliveEnabled bool `json:"keepalive_enabled"` // 缺省 true；false = 关 token 保活
 		BlackcatEnabled  bool `json:"blackcat_enabled"`  // 缺省 true；false = 关夜猫子
 		GrowthEnabled    bool `json:"growth_enabled"`    // 缺省 true；false = 关成长任务自动排程
+		// 每日权益领取（补偿 / 限时活动积分）：对齐 workbuddy2api 1.0.4 的
+		// 「每日权益自动领取」。缺省 true；hours 缺省 [8]。
+		BenefitClaimEnabled bool  `json:"benefit_claim_enabled"`
+		BenefitClaimHours   []int `json:"benefit_claim_hours"` // [8]
 
 		// 余额后台周期刷新：两次签到时点之间 credits 也能保持新鲜（面板/状态观测用）。
 		// 解冻语义同签到（余额 > 0 的冷却账号自动解冻），但不做签到不刷 token。
 		BalanceRefreshEnabled bool `json:"balance_refresh_enabled"` // 缺省 true；false = 关闭
 		BalanceRefreshMinutes int  `json:"balance_refresh_minutes"` // 缺省 5；<=0 回落 5
 	} `json:"schedule"`
+
+	// Qoder 第二条上游（可选）。PersonalAccessToken 为空 = 不启用；
+	// 启用后 model 前缀 "qoder:" 的请求走 Qoder，不进 WorkBuddy 选号池。
+	Qoder struct {
+		// PersonalAccessToken 在 Qoder 网页版「设置 → Personal Access Token」生成。
+		// 它是长期凭证，换出来的 job token 只有 24 小时，两者都在本进程内自动轮换。
+		PersonalAccessToken string `json:"personal_access_token"`
+		// TokenFile job token 落盘路径；空 = ./data/qoder_token.json。
+		TokenFile string `json:"token_file"`
+		// Accounts 多账号（可选）。非空时优先用它，PersonalAccessToken 仅作
+		// 单账号兼容入口。每个账号各自一份 token 缓存，互不复用。
+		Accounts []struct {
+			Name                string `json:"name"`
+			PersonalAccessToken string `json:"personal_access_token"`
+			TokenFile           string `json:"token_file"`
+		} `json:"accounts"`
+	} `json:"qoder"`
+
+	// Models 模型路由策略：别名 → 目标模型；模型 → 降级链；上游 → 允许时段。
+	// 三者都为空时网关行为与之前完全一致（零回归）。
+	Models struct {
+		// Aliases 客户端可用的短名字，例如 {"fast":"cn:glm-5.2"}。
+		// 目标可继续带 cn:/global:/qoder: 前缀；支持多级别名（最多 8 层）。
+		Aliases map[string]string `json:"aliases"`
+		// Fallback 模型降级链，例如 {"cn:deepseek-v4-flash":["cn:glm-5.2","qoder:auto"]}。
+		// 键可以写全名或裸名；只在"账号全不可用"时触发，内容类错误不降级。
+		Fallback map[string][]string `json:"fallback"`
+		// UpstreamHours 上游可用时段，例如 {"qoder":["20:00-08:00"]}。
+		// 支持跨零点；空/缺省 = 全天可用。多个时段取并集。
+		UpstreamHours map[string][]string `json:"upstream_hours"`
+	} `json:"models"`
+
+	// OpenAI 通用兼容上游（可选）。每个 provider 用 "<name>:<model>" 调用，
+	// 例如 groq:llama-3.3-70b。name 不能是 qoder / cn / global（保留前缀）。
+	OpenAI struct {
+		Providers []struct {
+			Name    string   `json:"name"`
+			BaseURL string   `json:"base_url"`
+			APIKey  string   `json:"api_key"`
+			Models  []string `json:"models"`
+		} `json:"providers"`
+	} `json:"openai"`
 
 	Global struct {
 		// Enabled global realm 路由开关。缺省 true：Realm() 正常把 realm=global/
@@ -223,6 +269,7 @@ func Default() *Config {
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Schedule.BlackcatHours = []int{23}
 	c.Schedule.GrowthHours = []int{1}
+	c.Schedule.BenefitClaimHours = []int{8}
 	// 开关「缺省 true」靠这几行实现：Load 先取 Default() 再 json.Unmarshal 覆盖，
 	// 键缺席（或为 null）时字段原样保留 true，只有显式 false 才关。
 	c.Schedule.CheckinEnabled = true
@@ -231,6 +278,7 @@ func Default() *Config {
 	c.Schedule.ActivityEnabled = true
 	c.Schedule.KeepaliveEnabled = true
 	c.Schedule.BlackcatEnabled = true
+	c.Schedule.BenefitClaimEnabled = true
 	c.Schedule.BalanceRefreshEnabled = true
 	c.Schedule.BalanceRefreshMinutes = 5
 	c.Upstream.TimeoutSeconds = 120

@@ -269,7 +269,9 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .acc .efs { min-width: 150px; }
 .acc .efs .tag { margin: 1px 0; }
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
-.acc.md { min-width: 700px; }
+/* 9 项可用率条需要 ~700px 才能一行排开；给表格一个下限，宁可窄屏横向滚动
+   也不要把「延迟/吞吐/消耗/明细」压成四个窄缝。 */
+.acc.md { min-width: 1120px; }
 /* 模型表：列多，内边距压到 7px；「积分倍率 / 默认档」不再吃宽度，
    「支持的思考档位」只留够放标签的最小宽度——省出来的横向空间给可用率列。 */
 .acc.md th, .acc.md td { padding: 7px 8px; }
@@ -279,12 +281,12 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
    7 项横排：今日调用 / 今日成功 / 近 30 天调用 / 近 30 天成功 / 状态 /
    延迟 / 吞吐。每项「标签在上、值在下」，不额外占行高。
    从没被调用过的模型整条显示「—」，不伪造 100%。 */
-.acc.md th.mdstat-h { min-width: 520px; }
+.acc.md th.mdstat-h { min-width: 596px; }
 .acc.md td.mdstat { padding: 6px 8px; }
 .mdst { display: flex; align-items: stretch; }
 .mds {
   display: flex; flex-direction: column; justify-content: center; gap: 3px;
-  padding: 0 9px; border-right: 1px solid var(--line-soft); white-space: nowrap;
+  padding: 0 6px; border-right: 1px solid var(--line-soft); white-space: nowrap;
 }
 .mds:first-child { padding-left: 0; }
 .mds:last-child { border-right: 0; padding-right: 0; }
@@ -293,7 +295,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .mds-v.ok { color: var(--ok); }
 .mds-v.bad { color: var(--bad); }
 /* 状态项最宽：上行「状态 + 百分比」，下行 24 格整点状态条。 */
-.mds-wide { min-width: 168px; }
+.mds-wide { min-width: 142px; }
 .mds-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .mds-bar { display: inline-flex; align-items: center; gap: 1.5px; }
 .mdsg { display: inline-block; width: 4px; height: 11px; border-radius: 1px; }
@@ -307,6 +309,28 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .who .nm { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who .id { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .realm-tag { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font: 500 10px/1 var(--sans); color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); vertical-align: 1px; }
+    /* 账号手动排序（面板 ↑↓ / ⟲）：图标按钮成组贴在操作列最左。排序改变的是
+       「选号策略」，与签到 / 余额这类「账号运维」动作不同类，故成组 + 留缝。 */
+    .ord-grp { display: flex; gap: 3px; margin-top: 5px; white-space: nowrap; }
+    .ord-grp > button.ord { min-width: 24px; padding: 2px 6px; font-size: 12px; line-height: 1.2; }
+    .ord-grp > button.ord + button.ord { margin-left: 0; }
+    .ord-grp > button.ord[data-d="up"] { color: var(--ok); }
+    .ord-grp > button.ord[data-d="down"] { color: var(--ink-3); }
+    /* 账号名旁的手动优先级徽标：priority != 0 才渲染（0 是默认态，不占视觉） */
+    .ord-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; font: 600 10px/1.6 var(--sans); vertical-align: 1px; }
+    .ord-tag.up { color: var(--ok); background: var(--ok-soft); }
+    .ord-tag.down { color: var(--ink-3); border: 1px solid var(--line-soft); }
+    /* 错误诊断：三层并排成列。每层都可能是空的（判不出就写「—」），
+       所以列宽固定、内容顶部对齐，扫一眼就知道缺的是哪一层。 */
+    .acc.dg th.dg-h { min-width: 200px; }
+    .acc.dg td.dg-cell { vertical-align: top; padding-top: 9px; padding-bottom: 9px; }
+    .acc.dg td.dg-cell pre { margin: 0; max-width: 320px; white-space: pre-wrap; word-break: break-all;
+      font: 11.5px/1.45 var(--mono); color: var(--ink-2); }
+    .acc.dg .dg-code { font: 600 11.5px/1.4 var(--mono); color: var(--accent); margin-right: 6px; }
+    .acc.dg .dg-hint { color: var(--ink-2); }
+    .acc.dg .dg-zh { color: var(--ink-1); font-weight: 500; }
+    .acc.dg .dg-detail { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
+    .acc.dg .dg-muted { color: var(--ink-3); }
 .realm-row { display: flex; align-items: center; gap: 14px; padding: 4px 0 10px; }
 .realm-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
 .realm-opt input { accent-color: var(--accent); margin: 0; }
@@ -351,8 +375,21 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .tag.warn { background: var(--warn-soft); color: var(--warn); }
 .tag.bad { background: var(--bad-soft); color: var(--bad); }
 .tag.mute { background: var(--surface-2); color: var(--ink-3); border: 1px solid var(--line); }
-.acts { display: flex; gap: 5px; justify-content: flex-end; white-space: nowrap; }
+/* 操作列：按钮多时换行而不是把表格撑出卡片右缘（1600 宽窗口下 9 个按钮
+   会把「移除」挤出可视区）。按钮本身不换行，整组换行。 */
+.acts { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; }
 .acts button { padding: 3.5px 8px; font-size: 12.5px; white-space: nowrap; flex: none; }
+/* 操作列定宽容器：账号动作已增至 6 个，让它们在窄窗口内换行，
+   而不是把表格撑出卡片右缘（1280 宽时「移除」会被裁掉）。 */
+.acts-in { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; width: 208px; }
+/* 窄屏（笔电 1280 一类）：操作按钮组保不住时，先让「在途」「最近成功」退场——
+   这两列在窄屏上信息价值低于操作可达性；1600 以上仍是完整九列。 */
+@media (max-width: 1420px) {
+  .acc th:nth-child(6), .acc td:nth-child(6),
+  .acc th:nth-child(8), .acc td:nth-child(8) { display: none; }
+  .acc th, .acc td { padding-left: 8px; padding-right: 8px; }
+  .acts-in { width: 190px; }
+}
 
 .empty { padding: 40px 20px; text-align: center; color: var(--ink-3); }
 .empty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
@@ -622,6 +659,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#config" data-view="config">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>
         配置</a></li>
+       <li><a href="#diagnose" data-view="diagnose">
+         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2 14.2 13H1.8z"/><path d="M8 6.3v3.2M8 11.3v.2"/></svg>
+         错误诊断</a></li>
       <li><a href="#logs" data-view="logs">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>
         运行日志</a></li>
@@ -684,6 +724,7 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <button class="xs" id="btnTravelAll">旅行巡检</button>
           <button class="xs" id="btnActivityAll">活跃上报</button>
           <button class="xs" id="btnKeepaliveAll">全部保活</button>
+          <button class="xs primary" id="btnCompAll" title="先查后领：只对确实可领取的账号发请求，已领取的自动跳过">一键领权益</button>
         </header>
         <div class="tbl-wrap">
         <table class="acc">
@@ -694,6 +735,21 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           </tr></thead>
           <tbody id="accBody"></tbody>
         </table>
+        </div>
+      </div>
+
+      <div class="box" id="compBox">
+        <header>
+          <h3>每日权益 <span class="hint">限时补偿 / 活动积分（官网 web 域，先查后领）</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="compNote">-</span>
+          <button class="xs" id="btnCompReload">刷新状态</button>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc md">
+            <thead><tr><th>账号</th><th>状态</th><th class="num">积分</th><th>说明</th><th>截止</th></tr></thead>
+            <tbody id="compBody"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -762,6 +818,43 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th class="mdstat-h" title="近 30 天可用率：今日 / 近 30 天调用与成功、最近 24 个整点状态条、平均延迟、平均吞吐。没有观测的模型显示「—」，不伪造 100%">可用率</th><th>上下文长度</th><th>最大输出</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
+        </div>
+      </div>
+
+      <div class="box" id="routeBox">
+        <header>
+          <h3>上游与路由 <span class="hint">多上游拓扑、模型别名、降级链与时段闸门（只读，改配置后刷新）</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="routeNote">-</span>
+          <button class="xs" id="btnRoutes">刷新路由</button>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc md">
+            <thead><tr><th>上游</th><th>形态</th><th>账号</th><th>模型</th><th>时段</th></tr></thead>
+            <tbody id="routeUpBody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-wrap" style="margin-top:10px">
+          <table class="acc md">
+            <thead><tr><th>别名</th><th>指向</th><th>降级链</th></tr></thead>
+            <tbody id="routeAliasBody"></tbody>
+          </table>
+        </div>
+
+        <div class="tbl-wrap" id="qoderBox" style="margin-top:10px" hidden>
+          <table class="acc md">
+            <thead><tr><th>Qoder 签到</th><th>连续</th><th>累计</th><th>最近 30 天</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td><b id="qkState">-</b></td>
+                <td id="qkCurrent">-</td>
+                <td id="qkTotal">-</td>
+                <td id="qkDots" class="qk-dots">-</td>
+                <td><button class="xs" id="btnQoderCheckin">立即签到</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="note" id="qkNote" style="margin-top:6px"></div>
         </div>
       </div>
     </section>
@@ -903,6 +996,22 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           </table>
         </div>
       </div>
+
+      <div class="box" id="usGroupBox">
+        <header><h3>按分组</h3><span class="grow"></span>
+          <span class="note">密钥分组（api_keys[].group）；未分组的归入「(未分组)」</span></header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th><th>分组</th>
+              <th class="num">请求</th><th class="num">失败</th>
+              <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
+              <th class="num">积分</th>
+            </tr></thead>
+            <tbody id="usGroupBody"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- 密钥管理 -->
@@ -985,6 +1094,14 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
               <label class="fld"><span class="lb">每小时最多请求数</span>
                 <input type="number" min="0" step="1" id="kfHourly" placeholder="0 = 不限"></label>
             </div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">同时在途请求上限</span>
+                <input type="number" min="0" step="1" id="kfConc" placeholder="0 = 不限">
+                <span class="hint">同一密钥同时跑几个请求；超过直接 429，不排队。</span></label>
+              <label class="fld"><span class="lb">单模型每日上限（可选）</span>
+                <input id="kfModelDaily" placeholder="glm-5.2=100, qoder:*=50" autocomplete="off">
+                <span class="hint">模型=次数，逗号分隔；支持结尾 * 通配，0 或不写 = 不限。</span></label>
+            </div>
             <span class="hint" style="display:block;margin:-6px 0 14px">时段跨零点（22:00 → 06:00）按跨天窗口判定；时间按服务器本地时区。</span>
             <div class="inline">
               <button type="submit" class="primary" id="kfSave">保存</button>
@@ -1065,6 +1182,14 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
               <label class="fld"><span class="lb">执行时点（小时，逗号分隔）</span>
                 <input name="growth_hours" placeholder="1">
                 <span class="hint">每日到点自动「扫描 + 执行全部待办」（Sequential 任务链零点解锁后自动推进，建议零点后）</span></label>
+            </div>
+            <div class="hr"></div>
+            <div class="grid2">
+              <div class="switch"><span class="lb">每日权益自动领取</span>
+                <input type="checkbox" name="benefit_claim_enabled" checked></div>
+              <label class="fld"><span class="lb">领取时点（小时，逗号分隔）</span>
+                <input name="benefit_claim_hours" placeholder="8">
+                <span class="hint">限时补偿 / 活动积分：先查后领，已领取的账号自动跳过；每天只跑一次。</span></label>
             </div>
           </div>
         </div>
@@ -1172,9 +1297,45 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <button type="submit" class="primary" id="btnCfgSave">保存配置</button>
         </div>
       </form>
+
+      <div class="box" id="backupBox">
+        <header>
+          <h3>配置备份 <span class="hint">每次保存配置前自动备份，保留最近 20 份</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="bkNote">-</span>
+          <button class="xs" id="btnBackups">刷新</button>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc md">
+            <thead><tr><th>备份文件</th><th></th></tr></thead>
+            <tbody id="bkBody"></tbody>
+          </table>
+        </div>
+        <div class="note" style="margin-top:8px">恢复会覆盖当前 config.json，恢复前会自动再备份一次当前配置；部分字段需重启进程生效。</div>
+      </div>
     </section>
 
     <!-- 日志 -->
+    <section class="view" id="view-diagnose" hidden>
+      <div class="box">
+        <header>
+          <h3>错误诊断</h3>
+          <span class="grow"></span>
+          <span class="note" id="diagNote">三层：本网关判断 / 客户端解释 / 上游证据</span>
+          <button class="xs" id="btnDiagReload" title="重新解析最近的上游错误行">刷新</button>
+        </header>
+        <div class="tbl-wrap">
+        <table class="acc md dg">
+          <thead><tr>
+            <th class="mark" aria-hidden="true"></th>
+            <th>时间</th><th>账号 / 模型</th><th>上游</th>
+            <th class="dg-h">本网关判断</th><th class="dg-h">客户端解释</th><th class="dg-h">上游证据</th>
+          </tr></thead>
+          <tbody id="diagBody"></tbody>
+        </table>
+        </div>
+      </div>
+    </section>
     <section class="view" id="view-logs" hidden>
       <div class="box">
         <header>

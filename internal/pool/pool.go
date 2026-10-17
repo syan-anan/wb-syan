@@ -295,7 +295,35 @@ func (p *Pool) SetRandomSource(fn func(n int64) int64) {
 func (p *Pool) Add(a *auth.Auth) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// 凭据更新（重新登录 / 重新导入同一 uid）= 新的登录态：上游判定的
+	// 「session dead / 账号被封」必须在换凭证后自动解除，否则用户重新登录
+	// 了却还是不可用，只能再点一次解冻（对齐 workbuddy2api 1.0.5）。
+	// 人工禁用（面板「禁用」，reason 以 "manual disable" 开头）保持原样——
+	// 那是运维的决定，不该被一次导入悄悄推翻。
+	if e, ok := p.byUID[a.UID]; ok && e.disabled && !strings.HasPrefix(e.reason, "manual disable") &&
+		credentialChanged(e.a, a) {
+		e.disabled = false
+		e.reason = ""
+		e.sessionDeadFails = 0
+		p.dirty.Store(true)
+	}
 	p.upsertLocked(a)
+}
+
+// credentialChanged 判断两次载入的凭证是否真的换过（re-login / 重新导入）。
+//
+// 为什么必须比对而不是「Add 就复活」：进程重启时 load() 之后会再用 auths/
+// 里的同一份凭证 Add 一次，若无条件复活，disabled 状态根本活不过一次重启。
+// 只有 token 实际变化才是「用户重新登录了」的证据——空值与相同值都视为未变。
+func credentialChanged(old, cur *auth.Auth) bool {
+	if old == nil || cur == nil {
+		return false
+	}
+	oldT, curT := old.AccessTokenValue(), cur.AccessTokenValue()
+	if curT == "" || curT == oldT {
+		return false
+	}
+	return true
 }
 
 // SyncToDir 用最新扫描结果对齐池：新账号加入、消失的账号剔除（状态保留）。

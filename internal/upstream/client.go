@@ -213,6 +213,11 @@ func SoftRateResetLoc() *time.Location { return softRateResetLoc }
 // 而不是账号整体被限流——账号健康，只是这个模型此刻被限（issue #31）。
 const modelRateLimitCode = "6004"
 
+// dailyRequestLimitCode 明确指向「当日请求数上限」的业务 code（6008）。
+// 与 6004（模型用量/Token 上限）不同：6008 是账号级日请求配额，次日零点
+// 重置，按模型豁免没有意义（换模型照样受限），只能等到零点。
+const dailyRequestLimitCode = "6008"
+
 // softRateResetPatternCN/EN 匹配重置文案（CN「将在 … 重置」/ global 域英文
 // "reset at <固定格式时间>"），捕获中间的时间串。
 const softRateResetPatternCN = `将在 (.+?) 重置`
@@ -223,6 +228,7 @@ const softRateResetPatternEN = `(?i)reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2
 // 轰炸）时尤甚。模式串均为纯常量。regexp 并发安全（匹配只读），无需额外锁。
 var (
 	reModelRateLimit  = regexp.MustCompile(`"code"\s*:\s*"?` + modelRateLimitCode + `"?`)
+	reDailyReqLimit   = regexp.MustCompile(`"code"\s*:\s*"?` + dailyRequestLimitCode + `"?`)
 	reSoftRateResetCN = regexp.MustCompile(softRateResetPatternCN)
 	reSoftRateResetEN = regexp.MustCompile(softRateResetPatternEN)
 )
@@ -235,6 +241,12 @@ const softRateTimeLayout = "2006-01-02 15:04:05"
 func IsModelRateLimit(body string) bool {
 	// `"code":6004` / `"code": 6004` / `"code":"6004"` 均可命中（JSON 空格容差）。
 	return reModelRateLimit.MatchString(body)
+}
+
+// IsDailyRequestLimit 报告 429 body 是否指向「账号当日请求上限」(6008)。
+// 命中时冷却到下一个本地零点，而不是走指数退避（重试不会让它提前恢复）。
+func IsDailyRequestLimit(body string) bool {
+	return reDailyReqLimit.MatchString(body)
 }
 
 // modelBlockCode 明确指向「该后端无此模型」的业务 code。

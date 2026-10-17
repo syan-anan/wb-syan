@@ -75,6 +75,16 @@ type Config struct {
 	// 与 server.Config.KeyQuota 是同一个实例（进程内单例）。
 	KeyQuota *keys.Quota
 
+	// QoderCheckin 手动触发一次 Qoder 活动领取（nil = 未配置 Qoder）。
+	// 返回结果列表，供面板展示"这次领到了什么/为什么没领到"。
+	QoderCheckin func() ([]upstream.QoderClaimResult, error)
+	// QoderHistory 返回连续签到天数、累计天数、最近 30 天标记。
+	QoderHistory func() (current, total int, recent []map[string]any)
+	// ListBackups 返回配置备份文件名（新的在前）。
+	ListBackups func() []string
+	// RestoreBackup 用指定备份覆盖当前配置。恢复后需要重启才能完全生效。
+	RestoreBackup func(name string) error
+
 	// CredentialKeyFile 客户端加密凭证（.info）的解密密钥文件路径（可选）。
 	// 空 = 不支持加密 .info（明文导入不受影响）。格式见 internal/credential：
 	// {"keyId": "<sha256(key) 前 16 位十六进制>", "key": "<32 字节 key 的 base64>"}。
@@ -204,6 +214,8 @@ func (p *Panel) routes() {
 	// 手动触发一次检查（面板侧栏「检查更新」按钮）：会等网络，最多 10s。
 	p.mux.HandleFunc("POST /panel/api/update/check", p.withAuth(p.updateCheckNow))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
+	// 错误三层诊断：从日志环里还原上游错误行（本网关判断 / 客户端解释 / 上游证据）。
+	p.mux.HandleFunc("GET /panel/api/diagnose", p.withAuth(p.diagnoseHandler))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
@@ -228,6 +240,9 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.withAuth(p.accountBalance))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.withAuth(p.accountRemove))
+	// 手动排序：上移 / 下移 / 恢复自动。手动档优先于全部自动选号策略，
+	// 语义与边界见 internal/pool/priority.go。
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/order", p.withAuth(p.accountOrder))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withAuth(p.accountTaskAccept))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withAuth(p.taskAcceptAll))
@@ -252,6 +267,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_latency_jitter", p.withAuth(p.modelLatencyJitter))
 	p.mux.HandleFunc("GET /panel/api/compensation", p.withAuth(p.compensationStatus))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/compensation/claim", p.withAuth(p.compensationClaim))
+	// 一键领取全部账号的每日权益（先查后领，只对可领取的发请求）。
+	p.mux.HandleFunc("POST /panel/api/compensation/claim_all", p.withAuth(p.compensationClaimAll))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
 	p.mux.HandleFunc("GET /panel/api/model_stats", p.withAuth(p.modelStats))
@@ -270,6 +287,12 @@ func (p *Panel) routes() {
 	// 配额计数清零（撞限额后人工放行一次）。
 	p.mux.HandleFunc("POST /panel/api/keys/{id}/reset_quota", p.withAuth(p.resetKeyQuota))
 	p.mux.HandleFunc("GET /panel/api/accounts/refs", p.withAuth(p.accountRefs))
+	// Qoder 签到状态与手动触发（另一条上游，不与 WorkBuddy 签到混在一起）。
+	p.mux.HandleFunc("GET /panel/api/qoder/checkin", p.withAuth(p.qoderCheckinStatus))
+	p.mux.HandleFunc("POST /panel/api/qoder/checkin", p.withAuth(p.qoderCheckinRun))
+	// 配置备份列表与恢复（写盘前自动备份，见 cmd/server/backup.go）。
+	p.mux.HandleFunc("GET /panel/api/backups", p.withAuth(p.backupsList))
+	p.mux.HandleFunc("POST /panel/api/backups/restore", p.withAuth(p.backupRestore))
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
@@ -535,6 +558,34 @@ func (p *Panel) accountDisable(w http.ResponseWriter, r *http.Request) {
 	p.cfg.Pool.Disable(uid, "manual disable (panel)")
 	log.Printf("panel: disable uid=%s（人工禁用）", uid)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// accountOrder 账号手动排序：把某个账号从自动选号策略里拎出来单独置顶 / 沉底，
+// 或恢复自动。语义与边界见 internal/pool/priority.go —— 手动档**高于**全部自动
+// 策略（成本分层 / 最早到期 / 加权随机 / 闲置补偿），但**不创造资格**：禁用、
+// 冷却、熔断、模型级冷却、在途上限、独占绑定、请求级轮换照常过滤。
+func (p *Panel) accountOrder(w http.ResponseWriter, r *http.Request) {
+	uid := r.PathValue("uid")
+	var req struct {
+		Dir string `json:"dir"`
+	}
+	// 空 body / 非 JSON / 超长一律 400：口径明确的动作不该被畸形请求顺带触发。
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	dir := strings.ToLower(strings.TrimSpace(req.Dir))
+	if dir != "up" && dir != "down" && dir != "auto" {
+		writeErr(w, http.StatusBadRequest, "dir must be up / down / auto")
+		return
+	}
+	pr, ok := p.cfg.Pool.AdjustPriority(uid, dir)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "account not found")
+		return
+	}
+	log.Printf("panel: order uid=%s dir=%s priority=%d", uid, dir, pr)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "priority": pr})
 }
 
 // accountCheckin 单号签到：DailyCheckin + 余额查询解冻（已签到等业务错误不阻塞余额刷新），

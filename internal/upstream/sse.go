@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -489,6 +490,46 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 	h.Set("X-Accel-Buffering", "no")
 	fl, _ := w.(http.Flusher)
 
+	// 首包保活（对齐 workbuddy2api 1.0.6）：先把 200 + SSE 头刷出去，再在等待
+	// 上游首帧期间每 5s 写一条 SSE 注释心跳。否则慢首包时客户端只看到「连上了
+	// 但一个字节都没有」，读超时先于上游首帧到达（尤其在移动网络/长思考模型）。
+	// 心跳是注释行（": keepalive"），任何 SSE 客户端都会忽略，不会污染数据帧。
+	var wmu sync.Mutex
+	w.WriteHeader(http.StatusOK)
+	if fl != nil {
+		fl.Flush()
+	}
+	stopHB := make(chan struct{})
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopHB:
+				return
+			case <-t.C:
+				wmu.Lock()
+				if _, err := io.WriteString(w, ": keepalive\n\n"); err == nil && fl != nil {
+					fl.Flush()
+				}
+				wmu.Unlock()
+			}
+		}
+	}()
+	var hbOnce sync.Once
+	stopHeartbeat := func() {
+		hbOnce.Do(func() { close(stopHB) })
+		// 最多等 200ms：心跳只是保活，不能因为一次阻塞写（客户端已断但
+		// TCP 还没回 RST）把整个请求收尾卡死。
+		select {
+		case <-hbDone:
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	defer stopHeartbeat()
+
 	// toolCallSeen 跨帧记录 delta.tool_calls 里已发过首片的 index，
 	// 供逐 chunk 透传时收敛 name 为「每 index 一次」（对齐 OpenAI 官方流）。
 	toolCallSeen := map[int]bool{}
@@ -504,9 +545,10 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 	// （error 对象上加一个键，message/code/requestId 等原文不动；hintFn 为
 	// nil / 空串 / 非 JSON 帧 → 原样写出，零改写）。
 	writeRaw := func(payload string) error {
-		if hint := frameGatewayHint(hintFn, payload); hint != "" {
-			payload = attachHintToErrorFrame(payload, hint)
-		}
+		stopHeartbeat() // 首帧到达：停心跳，后续只发真实帧
+		wmu.Lock()
+		defer wmu.Unlock()
+		payload = attachDiagnosticsToErrorFrame(payload, frameGatewayHint(hintFn, payload))
 		if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
 			return werr
 		}
@@ -519,6 +561,7 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 	// writeFrame 把 payload 按规范白名单重建后以 data: 帧写出并 flush。
 	// 仅 JSON 解析成功时计数记为一次有效转发（JSON 解析失败照常降级原样写出，但不计数）。
 	writeFrame := func(payload string) (int, error) {
+		stopHeartbeat()
 		var obj map[string]any
 		valid := 0
 		if json.Unmarshal([]byte(payload), &obj) == nil {
@@ -550,6 +593,10 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 			}
 			valid = 1
 		}
+		// 锁只覆盖真正的写操作：上面的 normalize 是纯计算；错误帧分支走
+		// writeRaw（它自己加锁），在锁内再调一次会自死锁（sync.Mutex 不可重入）。
+		wmu.Lock()
+		defer wmu.Unlock()
 		if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
 			return 0, werr
 		}
@@ -578,12 +625,16 @@ readLoop:
 			}
 		case trimmed != "":
 			// 注释/其他行：原样透传
+			stopHeartbeat()
+			wmu.Lock()
 			if _, werr := io.WriteString(w, line); werr != nil {
+				wmu.Unlock()
 				return werr
 			}
 			if fl != nil {
 				fl.Flush()
 			}
+			wmu.Unlock()
 		}
 		// 空行（帧分隔）吞掉：本函数自产 "\n\n"
 		if err != nil {
@@ -601,12 +652,16 @@ readLoop:
 		_ = writeRaw(`{"error":{"message":"empty upstream stream","type":"upstream_error","code":"upstream_parse"}}`)
 	}
 	// 保证恰好写一个 [DONE]（上游漏发时兜底补上）。
+	stopHeartbeat()
+	wmu.Lock()
 	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+		wmu.Unlock()
 		return err
 	}
 	if fl != nil {
 		fl.Flush()
 	}
+	wmu.Unlock()
 	if validFrames == 0 {
 		return errEmptyStream
 	}
@@ -623,10 +678,18 @@ func frameGatewayHint(hintFn func(string) string, payload string) string {
 	return strings.TrimSpace(hintFn(payload))
 }
 
-// attachHintToErrorFrame 在 error 帧的 error 对象上附加 gateway_hint 字段。
-// message/code/requestId 等既有键原样保留（只加不改）；非 JSON / 无 error 对象 →
-// payload 原样返回（宁可不加 hint 也不破坏原文透传）。
-func attachHintToErrorFrame(payload, hint string) string {
+// attachDiagnosticsToErrorFrame 在 error 帧的 error 对象上附加**三层诊断**里的
+// 后两层（原文 message/code/requestId 一律原样保留，只加不改）：
+//
+//	error.gateway_hint      网关判断（英文，可能为空）
+//	error.client_message    客户端中文解释（码表命中才有）
+//	error.client_detail     上游官方补充说明（码表里有 description 才有）
+//	error.upstream_code     从帧里解出的业务码（解不出则不带）
+//
+// 什么都没加（hint 空且码未命中/解不出）→ 返回原文与 changed=false，调用方
+// 据此**完全不改写** payload：未覆盖形态的帧与改造前逐字节一致（零回归）。
+// 非 JSON / 无 error 对象同样原样返回。
+func attachDiagnosticsToErrorFrame(payload, hint string) string {
 	var obj map[string]any
 	if json.Unmarshal([]byte(payload), &obj) != nil {
 		return payload
@@ -635,10 +698,36 @@ func attachHintToErrorFrame(payload, hint string) string {
 	if !ok {
 		return payload
 	}
-	e["gateway_hint"] = hint
+	changed := false
+	if hint != "" {
+		e["gateway_hint"] = hint
+		changed = true
+	}
+	if n, cm, hit := ExplainBody(payload); n != 0 {
+		e["upstream_code"] = n
+		changed = true
+		if hit {
+			e["client_message"] = cm.Message
+			if cm.Detail != "" {
+				e["client_detail"] = cm.Detail
+			}
+		}
+	}
+	if !changed {
+		return payload
+	}
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return payload
 	}
 	return string(out)
+}
+
+// attachHintToErrorFrame 只挂 gateway_hint 的旧入口（保留给既有测试与调用方）。
+// 线上路径走 attachDiagnosticsToErrorFrame（多带业务码与中文解释）。
+func attachHintToErrorFrame(payload, hint string) string {
+	if hint == "" {
+		return payload
+	}
+	return attachDiagnosticsToErrorFrame(payload, hint)
 }

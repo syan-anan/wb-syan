@@ -48,9 +48,25 @@ type Entry struct {
 	// ExpiresAt 有效期截止（Unix 秒）；0 = 不过期。
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// DailyLimit / HourlyLimit 时间窗配额（请求数）；0 = 不限。计数与滚动窗口见 quota.go。
-	DailyLimit  int  `json:"daily_limit,omitempty"`
-	HourlyLimit int  `json:"hourly_limit,omitempty"`
-	Disabled    bool `json:"disabled,omitempty"` // true = 立即失效（保留配置便于恢复）
+	DailyLimit  int `json:"daily_limit,omitempty"`
+	HourlyLimit int `json:"hourly_limit,omitempty"`
+	// MaxConcurrent 同一密钥的在途请求上限（对齐 workbuddy2api 1.0.2 的
+	// per-key 并发数）：0 / 空 = 不限；N > 0 = 超过即 429，不排队。
+	// 计数只在内存里（进程重启清零），不落盘——在途请求本来就随进程消失。
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
+	// ModelDaily 单模型每日请求上限：{"glm-5.2": 100, "qoder:*": 50}。
+	// 键支持结尾 "*" 前缀通配（大小写不敏感），空 = 不限制。计数与
+	// DailyLimit 共用自然日窗口（见 quota.go），按密钥 + 模型分别记录。
+	ModelDaily map[string]int `json:"model_daily,omitempty"`
+	Disabled   bool           `json:"disabled,omitempty"` // true = 立即失效（保留配置便于恢复）
+	// RateMultiplier 计费倍率：向该 key 的调用方收费时，把实测积分乘上此值。
+	// 0 或负数按 1.0 处理（未配置 = 原价）。语义是加价系数：打八折填 0.8，翻倍填 2.0。
+	// 只影响记账（BilledCredits），不参与路由/限流/配额——成本优先选号看的是真实
+	// 消耗，倍率若介入会把选号带偏。
+	RateMultiplier float64 `json:"rate_multiplier,omitempty"`
+	// Group 分组标签（运营口径：按客户/团队归类对账）。空 = 未分组。
+	// 只用于用量页归类汇总，不参与鉴权。
+	Group string `json:"group,omitempty"`
 }
 
 // Identity 一次请求的调用方身份。
@@ -69,10 +85,29 @@ type Identity struct {
 	ExpiresAt   int64    // 有效期截止（Unix 秒）；0 = 不过期
 	DailyLimit  int      // 每日请求配额；0 = 不限
 	HourlyLimit int      // 每小时请求配额；0 = 不限
+	// MaxConcurrent 同一密钥的在途请求上限；0 = 不限（见 Entry.MaxConcurrent）。
+	MaxConcurrent int
+	// ModelDaily 单模型每日请求上限（见 Entry.ModelDaily）。
+	ModelDaily map[string]int
+	// RateMultiplier 计费倍率（见 Entry.RateMultiplier）。<=0 按 1.0 处理。
+	RateMultiplier float64
+	// Group 分组标签（见 Entry.Group）。空 = 未分组。
+	Group string
 }
 
 // Restricted 是否限定账号（子 key 且配了账号白名单）。
 func (i Identity) Restricted() bool { return !i.Master && len(i.Accounts) > 0 }
+
+// EffectiveRate 返回生效的计费倍率：<=0 或 NaN 一律按 1.0（未配置 = 原价）。
+//
+// 单独开方法而不是让调用方各自判空：倍率的"未配置"语义只有一处定义，散在各处
+// 判空迟早会有一个地方写成"0 倍"（把账单记成零）——那比不记账更难查。
+func (i Identity) EffectiveRate() float64 {
+	if i.RateMultiplier > 0 && i.RateMultiplier == i.RateMultiplier {
+		return i.RateMultiplier
+	}
+	return 1.0
+}
 
 // Allows 该身份是否允许使用指定账号；未限定则恒 true。
 func (i Identity) Allows(uid string) bool {
@@ -126,18 +161,25 @@ func (i Identity) AllowsModel(model string) bool {
 	if m == "" {
 		return true
 	}
+	// 裸名：cn:/global:/qoder: 前缀只是网关侧路由语法，白名单里两种写法都要能用。
+	// 不带前缀的模式只比裸名，带前缀的模式只比全名——否则 "qoder:*" 会误放行
+	// 所有 cn 模型（前缀被剥掉后变成 "*"）。
+	bare := m
+	if k := strings.IndexByte(bare, ':'); k > 0 {
+		bare = bare[k+1:]
+	}
+	hit := func(pattern, name string) bool {
+		if strings.HasSuffix(pattern, "*") {
+			return strings.HasPrefix(name, strings.TrimSuffix(pattern, "*"))
+		}
+		return pattern == name
+	}
 	for _, pat := range i.Models {
 		p := strings.ToLower(strings.TrimSpace(pat))
 		if p == "" {
 			continue
 		}
-		if strings.HasSuffix(p, "*") {
-			if strings.HasPrefix(m, strings.TrimSuffix(p, "*")) {
-				return true
-			}
-			continue
-		}
-		if p == m {
+		if hit(p, m) || hit(p, bare) {
 			return true
 		}
 	}
@@ -203,6 +245,53 @@ func (i Identity) QuotaLimits() (daily, hourly int) {
 		return 0, 0
 	}
 	return i.DailyLimit, i.HourlyLimit
+}
+
+// ConcurrencyLimit 返回在途并发上限；0 = 不限。
+func (i Identity) ConcurrencyLimit() int {
+	if i.Master {
+		return 0
+	}
+	return i.MaxConcurrent
+}
+
+// ModelDailyLimit 返回指定模型的每日请求上限；0 = 不限。
+//
+// 匹配顺序：精确名（大小写不敏感）→ 结尾 "*" 的前缀通配（最长键先命中）→
+// 键 "*" 作为全局兜底。模型名可带 cn:/global:/qoder: 前缀，因此先按裸名
+// 匹配一次、再按原名匹配一次——面板里两种写法都能生效。
+func (i Identity) ModelDailyLimit(model string) int {
+	if i.Master || len(i.ModelDaily) == 0 {
+		return 0
+	}
+	bare := model
+	if k := strings.IndexByte(bare, ':'); k > 0 {
+		bare = bare[k+1:]
+	}
+	best, bestLen := 0, -1
+	for raw, limit := range i.ModelDaily {
+		if limit <= 0 {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(raw))
+		if k == "" {
+			continue
+		}
+		match := func(name string) bool {
+			name = strings.ToLower(name)
+			if strings.HasSuffix(k, "*") {
+				return strings.HasPrefix(name, strings.TrimSuffix(k, "*"))
+			}
+			return name == k
+		}
+		if !match(bare) && !match(model) {
+			continue
+		}
+		if len(k) > bestLen {
+			best, bestLen = limit, len(k)
+		}
+	}
+	return best
 }
 
 // ParseClock 解析 "HH:MM" 为「当日第几分钟」；空串或非法格式返回 ok=false。
@@ -322,6 +411,8 @@ func (s *Store) ResolveToken(tok string) (Identity, bool) {
 		Accounts: e.Accounts, Exclusive: e.Exclusive, Models: e.Models, Realms: e.Realms,
 		TimeStart: e.TimeStart, TimeEnd: e.TimeEnd, ExpiresAt: e.ExpiresAt,
 		DailyLimit: e.DailyLimit, HourlyLimit: e.HourlyLimit,
+		MaxConcurrent: e.MaxConcurrent, ModelDaily: e.ModelDaily,
+		RateMultiplier: e.RateMultiplier, Group: e.Group,
 	}, true
 }
 
@@ -465,6 +556,26 @@ func NormalizeEntries(entries []Entry) ([]Entry, bool) {
 		if e.HourlyLimit < 0 {
 			e.HourlyLimit = 0
 			changed = true
+		}
+		if e.MaxConcurrent < 0 {
+			e.MaxConcurrent = 0
+			changed = true
+		}
+		if len(e.ModelDaily) > 0 {
+			clean := make(map[string]int, len(e.ModelDaily))
+			for m, n := range e.ModelDaily {
+				m = strings.TrimSpace(m)
+				if m == "" || n <= 0 {
+					changed = true
+					continue
+				}
+				clean[m] = n
+			}
+			if len(clean) == 0 {
+				e.ModelDaily = nil
+			} else {
+				e.ModelDaily = clean
+			}
 		}
 		out = append(out, e)
 	}

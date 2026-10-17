@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,7 +35,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.17.0-panel"
+const appVersion = "1.18.0-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -269,6 +270,11 @@ func main() {
 	defer keyQuota.Stop()
 	log.Printf("[keys] 子密钥配额计数已启用: %s", keyQuotaPath)
 
+	// Qoder 上游与签到历史先声明：面板的闭包要捕获它们，而实际装配在
+	// handler 构建之前完成。声明与赋值分开是为了让闭包能引用到。
+	var qoderClient *upstream.QoderPool
+	qoderHistPath := filepath.Join("data", "qoder_checkin.json")
+
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
@@ -308,6 +314,34 @@ func main() {
 		},
 		// 手机号登录（+86/+852/+853）：短信验证码换凭证，与浏览器登录并列的第二条入口。
 		PhoneLogin: phoneMgr,
+		// Qoder 签到：状态读本地历史，触发走独立 PAT 池。
+		QoderCheckin: func() ([]upstream.QoderClaimResult, error) {
+			if qoderClient == nil {
+				return nil, fmt.Errorf("未配置 Qoder 上游")
+			}
+			results := qoderClient.CheckinAll(context.Background())
+			grants := 0
+			for _, r := range results {
+				if r.Status == "CLAIMED" && !r.Replayed {
+					grants++
+				}
+			}
+			if grants > 0 {
+				h := upstream.LoadQoderCheckinHistory(qoderHistPath)
+				h.Mark(time.Now().Format("2006-01-02"), grants)
+				if err := h.Save(qoderHistPath); err != nil {
+					log.Printf("WARN: [qoder] 签到历史落盘失败: %v", err)
+				}
+			}
+			return results, nil
+		},
+		QoderHistory: func() (int, int, []map[string]any) {
+			h := upstream.LoadQoderCheckinHistory(qoderHistPath)
+			cur, total := h.Streak(time.Now())
+			return cur, total, h.RecentDays(time.Now(), 30)
+		},
+		ListBackups:   func() []string { return listBackups(*cfgPath) },
+		RestoreBackup: func(name string) error { return restoreBackup(*cfgPath, name) },
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
@@ -315,9 +349,59 @@ func main() {
 	log.SetOutput(io.MultiWriter(os.Stderr, pn.Logs()))
 	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
 
+	// 模型路由策略（别名 / 降级链 / 上游时段）。配置非法直接拒启动：
+	// 时段写错这类问题留到线上才发现，表现会是"莫名 503"，极难排查。
+	routes, rerr := buildRoutes(cfg)
+	if rerr != nil {
+		log.Fatalf("models 配置非法: %v", rerr)
+	}
+
+	// Qoder 第二条上游（可选）：配了 PAT 才启用，不配则 qoder: 模型返回 501。
+	// 多账号时用 accounts 数组；只配了单账号 PersonalAccessToken 时自动包成一条。
+	// token 缓存与 WorkBuddy 的状态文件分开放，删掉不会影响账号池。
+	var qoderAccounts []upstream.QoderAccount
+	for _, a := range cfg.Qoder.Accounts {
+		qoderAccounts = append(qoderAccounts, upstream.QoderAccount{
+			Name:      a.Name,
+			PAT:       a.PersonalAccessToken,
+			TokenFile: a.TokenFile,
+		})
+	}
+	if len(qoderAccounts) == 0 {
+		if pat := strings.TrimSpace(cfg.Qoder.PersonalAccessToken); pat != "" {
+			tokenFile := cfg.Qoder.TokenFile
+			if tokenFile == "" {
+				tokenFile = filepath.Join("data", "qoder_token.json")
+			}
+			qoderAccounts = append(qoderAccounts, upstream.QoderAccount{PAT: pat, TokenFile: tokenFile})
+		}
+	}
+	qoderClient = upstream.NewQoderPool(qoderAccounts, filepath.Join("data"))
+	if qoderClient != nil {
+		log.Printf("qoder: 上游已启用（model 前缀 qoder:，%d 个账号，token 缓存 data/）", qoderClient.Len())
+	}
+
+	// 通用 OpenAI 兼容上游：一份 provider 配置覆盖所有"标准 OpenAI 形状"的服务。
+	var compatProviders []upstream.OpenAIProvider
+	for _, p := range cfg.OpenAI.Providers {
+		compatProviders = append(compatProviders, upstream.OpenAIProvider{
+			Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey, Models: p.Models,
+		})
+	}
+	compatPool, compatWarnings := upstream.NewOpenAICompatPool(compatProviders)
+	for _, w := range compatWarnings {
+		log.Printf("WARN: %s", w)
+	}
+	if compatPool != nil {
+		log.Printf("openai-compat: %d 个上游已启用（%v）", compatPool.Len(), compatPool.ProviderNames())
+	}
+
 	h := server.NewHandler(server.Config{
 		Pool:         p,
 		Upstream:     up,
+		Qoder:        qoderClient,
+		Routes:       routes,
+		Compat:       compatPool,
 		APIKey:       cfg.APIKey,
 		Session:      sessRouter,
 		StickyCount:  sessCount,
@@ -340,6 +424,16 @@ func main() {
 	defer stop()
 	go sch.Run(ctx)
 	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
+	if qoderClient != nil {
+		// Qoder 活动领取：与 WorkBuddy 签到同一批时点。没有 Qoder 上游时整个
+		// goroutine 不启动，避免空转。
+		go runQoderCheckin(ctx, qoderClient, cfg.Schedule.CheckinHours,
+			qoderHistPath)
+	}
+	// 每日权益自动领取（限时补偿 / 活动积分）：独立时点，缺省 08:00 一次。
+	if cfg.Schedule.BenefitClaimEnabled {
+		go runDailyBenefits(ctx, pn, cfg.Schedule.BenefitClaimHours)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
@@ -398,6 +492,11 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	oldRaw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read current config: %w", err)
+	}
+	// 写盘前先备份当前配置。备份失败只告警不阻断保存——保存配置是用户的主诉求，
+	// 备份是保险；因为保险出事而拒绝保存，等于把保险做成了故障点。
+	if berr := backupConfigFile(path); berr != nil {
+		log.Printf("WARN: config backup failed: %v", berr)
 	}
 	var cur, incoming map[string]any
 	if err := json.Unmarshal(oldRaw, &cur); err != nil {

@@ -28,21 +28,59 @@ func (h *Handler) keyAccessDenied(id keys.Identity, realm, model string) string 
 		}
 		return "该密钥不允许访问国内（cn）模型"
 	}
-	now := time.Now()
+	return h.keyBudgetDenied(id, model, time.Now())
+}
+
+// keyAccessDeniedAnyRealm 同 keyAccessDenied，但跳过域判定：用于域语义不适用的
+// 上游（qoder / OpenAI 兼容 provider）——它们没有 cn/global 之分，拿 cn 口径
+// 去卡一个 global-only 密钥只会误伤。模型白名单、时段、有效期与配额照常生效。
+func (h *Handler) keyAccessDeniedAnyRealm(id keys.Identity, model string) string {
+	if id.Master {
+		return ""
+	}
+	if !id.AllowsModel(model) {
+		return "该密钥不允许调用模型 " + model
+	}
+	return h.keyBudgetDenied(id, model, time.Now())
+}
+
+// keyBudgetDenied 时段 / 有效期 / 请求配额（含单模型日限）判定。
+// 配额在放行时同一次调用内完成"检查 + 自增"（keys.Quota.ReserveModel），一次
+// HTTP 请求只计一次（轮转重试不重复计数）。
+func (h *Handler) keyBudgetDenied(id keys.Identity, model string, now time.Time) string {
 	if ok, why := id.AllowsAt(now); !ok {
 		return why
 	}
 	daily, hourly := id.QuotaLimits()
-	if daily > 0 || hourly > 0 {
+	modelDaily := id.ModelDailyLimit(model)
+	if daily > 0 || hourly > 0 || modelDaily > 0 {
 		if h.cfg.KeyQuota == nil {
 			// 未装配配额计数器（裸用/测试）：不静默放行受限配额，按不限额处理并留痕。
 			return ""
 		}
-		if ok, why := h.cfg.KeyQuota.Reserve(id.KeyID, daily, hourly, now); !ok {
+		if ok, why := h.cfg.KeyQuota.ReserveModel(id.KeyID, daily, hourly, model, modelDaily, now); !ok {
 			return why
 		}
 	}
 	return ""
+}
+
+// acquireKeySlot 占用该密钥的一个并发名额。返回的 release 必须在请求结束时
+// 调用一次（defer）；未配置并发上限时返回 nil，调用方直接跳过。
+//
+// 单独于 keyAccessDenied：拒绝原因（403）与并发（429）是不同的状态码，
+// 而且并发名额必须在整个请求生命周期内持有——塞进返回 string 的判定函数
+// 就无法保证释放。
+func (h *Handler) acquireKeySlot(id keys.Identity) (func(), string) {
+	limit := id.ConcurrencyLimit()
+	if limit <= 0 || id.KeyID == "" || h.cfg.KeyQuota == nil {
+		return nil, ""
+	}
+	if ok, why := h.cfg.KeyQuota.Acquire(id.KeyID, limit); !ok {
+		return nil, why
+	}
+	keyID := id.KeyID
+	return func() { h.cfg.KeyQuota.Release(keyID) }, ""
 }
 
 // exclusiveDeny 计算本次调用方「看不到」的独占账号集合。

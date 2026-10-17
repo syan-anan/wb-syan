@@ -397,23 +397,84 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', apikeys: '密钥管理', config: '配置', logs: '运行日志' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', apikeys: '密钥管理', config: '配置', logs: '运行日志', diagnose: '错误诊断' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
   $('ttl').textContent = TITLES[v];
+  if (v === 'accounts') loadCompensation();
   if (v === 'models' && !$('mdBody').children.length) loadModels();
+  if (v === 'models') { loadRoutes(); loadQoder(); }
   if (v === 'apikeys') loadKeys();
-  if (v === 'config') loadConfig();
+  if (v === 'config') { loadConfig(); loadBackups(); }
   if (v === 'logs') loadLogs();
-  if (v === 'usage') loadUsage();
+  if (v === 'diagnose') loadDiagnose();
+  if (v === 'usage') { loadUsage(); loadUsageGroups(); }
   if (v === 'packages') loadPackages();
   if (v === 'taskscenter') reattachQueueView();
   if (v === 'growth') loadGrowth();
 }
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
+
+/* ── 错误诊断（三层）────────────────────────────────────────────────
+   数据源 GET /panel/api/diagnose：服务端从日志环里还原最近的上游错误行。
+   三层固定：① 本网关判断（英文 hint）② 客户端解释（中文码表）③ 上游证据
+   （HTTP 状态 + body 原文）。哪层判不出就写「—」，不拼假话——「没收录」
+   和「没问题」在排障时是两件完全不同的事。 */
+async function loadDiagnose() {
+  const tb = $('diagBody');
+  if (!tb) return;
+  try {
+    renderDiagnose(await api('diagnose'));
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="7"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+  }
+}
+function renderDiagnose(d) {
+  const tb = $('diagBody');
+  const list = (d && d.entries) || [];
+  $('diagNote').textContent = list.length
+    ? '最近 ' + list.length + ' 条 · 三层：网关判断 / 客户端解释 / 上游证据'
+    : '暂无上游错误记录';
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="big">没有错误记录</div>' +
+      '网关还没撞到上游错误——有请求失败后这里会自动出现三层诊断</div></td></tr>';
+    return;
+  }
+  tb.innerHTML = list.map(e => {
+    const when = new Date(e.ts || 0);
+    const hhmm = String(when.getHours()).padStart(2, '0') + ':' +
+      String(when.getMinutes()).padStart(2, '0') + ':' +
+      String(when.getSeconds()).padStart(2, '0');
+    const who = (e.account ? '<div class="id">' + esc(e.account) + '</div>'
+        : '<span class="dg-muted">—</span>') +
+      (e.model ? '<div class="hint" style="font-size:11.5px">' + esc(e.model) + '</div>' : '');
+    const code = e.upstream_code
+      ? '<span class="dg-code" title="上游业务码">' + esc(e.upstream_code) + '</span>'
+      : '';
+    const gw = e.gateway_hint
+      ? '<span class="dg-hint">' + esc(e.gateway_hint) + '</span>' +
+        (e.kind ? '<div class="dg-detail">kind: ' + esc(e.kind) + '</div>' : '')
+      : '<span class="dg-muted">— 网关未给出判断</span>';
+    const zh = e.client_message
+      ? '<span class="dg-zh">' + esc(e.client_message) + '</span>' +
+        (e.client_detail ? '<div class="dg-detail">' + esc(e.client_detail) + '</div>' : '')
+      : '<span class="dg-muted">— 码表未收录' +
+        (e.upstream_code ? '（码 ' + esc(e.upstream_code) + '）' : '') + '</span>';
+    return '<tr>' +
+      '<td class="mark" aria-hidden="true"><i></i></td>' +
+      '<td class="num" title="' + esc(when.toLocaleString()) + '">' + hhmm + '</td>' +
+      '<td>' + who + '</td>' +
+      '<td class="num">' + code + '<span class="dg-muted">HTTP ' + esc(e.status || '?') + '</span></td>' +
+      '<td class="dg-cell">' + gw + '</td>' +
+      '<td class="dg-cell">' + zh + '</td>' +
+      '<td class="dg-cell"><pre>' + esc(e.upstream_msg || e.raw || '') + '</pre></td>' +
+      '</tr>';
+  }).join('');
+}
+if ($('btnDiagReload')) $('btnDiagReload').onclick = () => loadDiagnose();
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
 /* 排序：默认「按添加顺序」（added_at 升序；后端已按此序返回，前端再排一次让切换即时
@@ -422,6 +483,11 @@ function sortAccounts(list) {
   const arr = (list || []).slice();
   const rank = r => (r === 'global' ? 1 : 0);
   arr.sort((a, b) => {
+    // 手动排序（面板 ↑↓）是列表第一档，与选号的手动档同口径：非零者按
+    // priority 降序（正数置顶、负数沉底），未干预的 0 挡在其间。这样按一下
+    // 按钮就能立刻在列表里看见账号动了，不用等下一次请求才知道排到哪。
+    const dp = (b.priority || 0) - (a.priority || 0);
+    if (dp) return dp;
     if (accSort === 'realm') {
       const d = rank(a.realm) - rank(b.realm);
       if (d) return d;
@@ -459,15 +525,25 @@ function renderAccounts(list) {
     const pct = s.credits_total > 0
       ? Math.min(100, Math.round((s.credits || 0) / s.credits_total * 100))
       : Math.round((s.credits || 0) / maxCred * 100);
+    // 额度口径（与上游面板对齐）：credits_total > 0 才是**官方总额度**（来自
+    // UserResource）；查询不到时进度条按「池内最高」相对显示，那是相对位置、
+    // 不是额度百分比——文案必须说清楚，否则会被读成「快用完了」。
+    let credTip = s.credits_total > 0
+      ? '官方额度：剩余 ' + s.credits + ' / 总额 ' + s.credits_total + '（' + pct + '%）'
+      : '官方额度未知（尚未查询到总额度）——进度条按池内最高相对显示，不是额度百分比';
     // 成本台账 tooltip（model_costs）：每模型实测单价（≤0 = 实测免费），运维据此
     // 看「为什么总选它」——免费号垄断 / 单价排序一眼可见。
-    let credTip = s.credits_total > 0 ? '剩余 ' + s.credits + ' / 总额 ' + s.credits_total + '（' + pct + '%）' : '积分（相对池内最高）';
     const costs = (s.model_costs || []).filter(c => c.model);
     if (costs.length) {
       credTip += '\n实测单价（credits/1K）：\n' + costs.map(c =>
         '  ' + c.model + '：' + (c.cost_per_1k <= 0 ? '免费' : c.cost_per_1k)).join('\n');
     }
     const frozen = s.disabled || cool > 0;
+    // 手动优先级徽标（priority）：非零才显示——0 是默认态，满屏「自动」等于噪音。
+    const pr = s.priority || 0;
+    const prBadge = pr === 0 ? ''
+      : '<span class="ord-tag ' + (pr > 0 ? 'up' : 'down') + '" title="手动优先级 ' + pr +
+        '（面板 ↑↓ 调整；0 = 自动排序）">' + (pr > 0 ? '手动优先 +' + pr : '手动靠后 ' + pr) + '</span>';
     const tu = s.token_usage || {};
     const req = tu.request_count || 0;
     const totalTok = formatTokenCount(tu.total_tokens);
@@ -477,7 +553,11 @@ function renderAccounts(list) {
     const usageTitle = '最近一次：' + req + ' 次 / ' + totalTok + ' / 延迟 ' + latency + ' / ' + rate;
     return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
-      '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + '</div><div class="id">' + esc(short) + '</div></td>' +
+      '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + prBadge + '</div><div class="id">' + esc(short) + '</div><span class="ord-grp" title="手动排序：压过自动策略，但不创造资格">' +
+        '<button class="xs ghost ord" data-a="order" data-d="up" data-u="' + esc(s.uid) + '" title="上移：优先使用该账号" aria-label="上移">↑</button>' +
+        '<button class="xs ghost ord" data-a="order" data-d="down" data-u="' + esc(s.uid) + '" title="下移：最后才用该账号" aria-label="下移">↓</button>' +
+        (pr === 0 ? '' : '<button class="xs ghost ord" data-a="order" data-d="auto" data-u="' + esc(s.uid) + '" title="恢复自动排序（清除手动优先级）" aria-label="恢复自动排序">⟲</button>') +
+        '</span></td>' +
       '<td>' + tag + note + '</td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
@@ -490,7 +570,7 @@ function renderAccounts(list) {
       '</span></td>' +
       '<td class="num ago-cell" style="color:var(--ink-3)" data-ago="' + esc(s.last_success || '') +
         '" title="' + esc(absTime(s.last_success)) + '">' + ago(s.last_success) + '</td>' +
-      '<td class="acts">' +
+      '<td class="acts"><div class="acts-in">' +
         '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '">签到</button>' +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '">余额</button>' +
         '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>' +
@@ -498,7 +578,7 @@ function renderAccounts(list) {
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
         '<button class="xs ghost danger" data-a="remove" data-u="' + esc(s.uid) + '">移除</button>' +
-      '</td></tr>';
+      '</div></td></tr>';
   }).join('');
 }
 
@@ -610,10 +690,20 @@ $('accBody').addEventListener('click', async ev => {
   if (!b) return;
   const u = b.dataset.u, a = b.dataset.a;
   if (a === 'remove' && !confirm('移除账号将删除池状态与 auths/ 下的凭证文件，且不可恢复。确认移除？')) return;
+  // 恢复自动是有损动作（清掉人工排序），二次确认；↑↓ 是可逆的，不打断。
+  if (a === 'order' && b.dataset.d === 'auto' && !confirm('恢复该账号的自动排序（清除手动优先级）？')) return;
   if (a === 'disable' && !confirm('禁用后该账号不再参与选号，需手动解冻才能恢复。确认禁用？')) return;
   b.disabled = true;
   try {
-    if (a === 'checkin') {
+    if (a === 'order') {
+      // 手动排序：手动档压过全部自动策略，但不创造资格（禁用/冷却/独占照常生效）。
+      // 成功后 finally 里的 loadOverview 会整表重排，用户立刻看到账号挪位置。
+      const r = await api('accounts/' + encodeURIComponent(u) + '/order', {
+        method: 'POST', body: JSON.stringify({ dir: b.dataset.d })
+      });
+      toast(r.priority === 0 ? '已恢复自动排序'
+        : ('手动优先级 ' + (r.priority > 0 ? '+' : '') + r.priority), 'ok');
+    } else if (a === 'checkin') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/checkin', { method: 'POST' });
       toast('签到完成' + (r.credits != null ? '，积分 ' + r.credits + (r.credits_total > 0 ? '/' + r.credits_total : '') : '') + (r.checkin_message ? '（' + r.checkin_message + '）' : ''), 'ok');
     } else if (a === 'balance') {
@@ -653,6 +743,63 @@ $('btnTravelAll').onclick = async () => {
 $('btnActivityAll').onclick = async () => {
   try { await api('activity_all', { method: 'POST' }); toast('活跃上报已开始，结果见日志', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
+};
+
+/* ── 每日权益（限时补偿 / 活动积分）────────────────────────────────
+   数据源 GET /panel/api/compensation（先查后领的只读快照）。
+   状态文案与后端 compensation.go 的 status 取值一一对应，未知值原样显示，
+   不吞成「失败」——排查时要看得见上游到底回了什么。 */
+const COMP_LABEL = {
+  available: ['可领取', 'tag ok'],
+  claimed: ['已领取', 'tag'],
+  ineligible: ['无权益', 'tag'],
+  expired: ['已截止', 'tag warn'],
+  error: ['查询失败', 'tag bad'],
+  unknown: ['状态未知', 'tag warn'],
+  disabled: ['已禁用', 'tag bad'],
+};
+function renderCompensation(d) {
+  const body = $('compBody');
+  if (!body) return;
+  const list = (d && d.results) || [];
+  $('compNote').textContent = d
+    ? ('可领取 ' + (d.available || 0) + ' · 已领取 ' + (d.claimed || 0) + ' / 共 ' + (d.total || 0))
+    : '-';
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="5" class="empty">账号池是空的</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map(x => {
+    const meta = COMP_LABEL[x.status] || [x.status || '未知', 'tag'];
+    const who = esc(x.nickname || x.uid);
+    return '<tr><td>' + who + '</td>' +
+      '<td><span class="' + meta[1] + '">' + esc(meta[0]) + '</span></td>' +
+      '<td class="num">' + (x.credit > 0 ? x.credit : '—') + '</td>' +
+      '<td>' + esc(x.reason || '') + '</td>' +
+      '<td>' + esc(x.end_time || '—') + '</td></tr>';
+  }).join('');
+}
+async function loadCompensation() {
+  try {
+    renderCompensation(await api('compensation'));
+  } catch (e) {
+    $('compNote').textContent = '读取失败：' + e.message;
+  }
+}
+$('btnCompReload').onclick = loadCompensation;
+$('btnCompAll').onclick = async () => {
+  const b = $('btnCompAll');
+  if (b.disabled) return;
+  b.disabled = true;
+  const old = b.textContent;
+  b.textContent = '领取中…';
+  try {
+    const r = await api('compensation/claim_all', { method: 'POST' });
+    toast('领取完成：新增 ' + (r.claimed || 0) + '，跳过 ' + (r.skipped || 0) + '，失败 ' + (r.failed || 0),
+      (r.failed || 0) > 0 ? 'err' : 'ok');
+    renderCompensation(r);
+  } catch (e) { toast('领取失败：' + e.message, 'err'); }
+  finally { b.disabled = false; b.textContent = old; }
 };
 
 /* ── 模型 ─────────────────────────────────────────────────────────── */
@@ -741,7 +888,7 @@ function mdStatStrip(m) {
     return '<div class="mdst">' + cell('今日调用', '—') + cell('今日成功', '—') +
       cell('近 30 天调用', '—') + cell('近 30 天成功', '—') +
       '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>' +
-      cell('延迟', '—') + cell('吞吐', '—') + '</div>';
+      cell('延迟', '—') + cell('吞吐', '—') + cell('消耗', '—') + cell('明细', '—') + '</div>';
   }
   const ok = Math.max(0, (s.today_req || 0) - (s.today_err || 0));
   const wok = Math.max(0, (s.window_req || 0) - (s.window_err || 0));
@@ -760,6 +907,27 @@ function mdStatStrip(m) {
       '<span class="mds-v' + rateCls + '">' + (rate === null ? '—' : (rate * 100).toFixed(1) + '%') +
       '</span></span><span class="mds-bar" title="最近 24 个整点，每格 1 小时">' + bars + '</span></span>'
     : '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>';
+  // 用量口径四态（与后端 ModelStat 的 credits / credit_samples / tokens_recorded /
+  // tokens_missing 一一对应）：有观测才显示实测值；没有观测是「未知」，
+  // 观测到 0 是「免费」（真实结论）；缺 token 明细是「未记录」——都不是 0。
+  const creditSamples = s.credit_samples || 0;
+  const creditVal = Number(s.credits) || 0;
+  const costTxt = creditSamples === 0
+    ? '未知'
+    : (creditVal > 0 ? (Math.round(creditVal * 100) / 100) + ' cr' : '免费');
+  const costCls = creditSamples === 0 ? '' : (creditVal > 0 ? '' : ' ok');
+  const costTitle = creditSamples === 0
+    ? '窗口内没有成本观测（上游未返回 usage.credit）——是未知，不是 0'
+    : (creditVal > 0
+        ? '窗口内实测消耗 ' + creditVal + ' credits（' + creditSamples + ' 次观测）'
+        : '窗口内实测 0 消耗（' + creditSamples + ' 次观测，免费模型）');
+  const tokRec = s.tokens_recorded || 0;
+  const tokMiss = s.tokens_missing || 0;
+  const tokTxt = tokRec === 0 ? '未记录'
+    : (tokMiss > 0 ? fmtInt(tokRec) + '/' + fmtInt(tokRec + tokMiss) : fmtInt(tokRec));
+  const tokTitle = tokRec === 0
+    ? '窗口内没有任何带 token 明细的请求（上游未返回 usage）——是未记录，不是 0 token'
+    : ('有 token 明细的请求 ' + tokRec + ' 次' + (tokMiss > 0 ? '；另有 ' + tokMiss + ' 次未记录' : ''));
   return '<div class="mdst">' +
     cell('今日调用', fmtInt(s.today_req || 0)) +
     cell('今日成功', fmtInt(ok), ' ok') +
@@ -769,6 +937,10 @@ function mdStatStrip(m) {
     cell('延迟', fmtMs(s.avg_latency_ms)) +
     cell('吞吐', s.avg_tokens_per_second
       ? Number(s.avg_tokens_per_second).toFixed(1) + ' t/s' : '—') +
+    '<span class="mds" title="' + esc(costTitle) + '"><b class="mds-k">消耗</b>' +
+      '<span class="mds-v' + costCls + '">' + costTxt + '</span></span>' +
+    '<span class="mds" title="' + esc(tokTitle) + '"><b class="mds-k">明细</b>' +
+      '<span class="mds-v">' + tokTxt + '</span></span>' +
     '</div>';
 }
 
@@ -938,6 +1110,7 @@ const CFG_MAP = {
   travel_hours: ['schedule', 'travel_hours'], travel_enabled: ['schedule', 'travel_enabled'],
   activity_hours: ['schedule', 'activity_hours'], activity_enabled: ['schedule', 'activity_enabled'],
   keepalive_hours: ['schedule', 'keepalive_hours'], keepalive_enabled: ['schedule', 'keepalive_enabled'],
+  benefit_claim_hours: ['schedule', 'benefit_claim_hours'], benefit_claim_enabled: ['schedule', 'benefit_claim_enabled'],
   balance_refresh_enabled: ['schedule', 'balance_refresh_enabled'], balance_refresh_minutes: ['schedule', 'balance_refresh_minutes'],
   max_in_flight: ['pool', 'max_in_flight'], max_in_flight_global: ['pool', 'max_in_flight_global'],
   breaker_threshold: ['pool', 'breaker_threshold'],
@@ -2667,13 +2840,41 @@ function keyLimitTags(k) {
   if ((k.models || []).length) tags.push('模型 ' + k.models.join('、'));
   if ((k.realms || []).length) tags.push('域 ' + k.realms.map(r => r === 'global' ? '国际' : '国内').join('/'));
   if (k.time_start || k.time_end) tags.push('时段 ' + (k.time_start || '00:00') + '–' + (k.time_end || '24:00'));
+  if (k.max_concurrent > 0) tags.push('并发 ≤ ' + k.max_concurrent);
+  const md = Object.keys(k.model_daily || {});
+  if (md.length) tags.push('模型日限 ' + md.length + ' 条');
   return tags;
+}
+// 「模型=次数」文本 ↔ 对象：与后端 keys.Entry.model_daily 同口径。
+// 解析失败的行直接丢弃（后端也会再校验一遍，前端不制造假配置）。
+function parseModelDaily(str) {
+  const out = {};
+  for (const part of String(str || '').split(/[,，\n]/)) {
+    const s = part.trim();
+    if (!s) continue;
+    const i = s.lastIndexOf('=');
+    if (i <= 0) continue;
+    const name = s.slice(0, i).trim();
+    const n = parseInt(s.slice(i + 1), 10);
+    if (!name || isNaN(n) || n <= 0) continue;
+    out[name] = n;
+  }
+  return out;
+}
+function modelDailyText(m) {
+  return Object.keys(m || {}).map(k => k + '=' + m[k]).join(', ');
 }
 // 配额用量文本（仅配了上限才展示）。
 function quotaText(k) {
   const parts = [];
   if (k.daily_limit > 0) parts.push('今日 ' + (k.used_today || 0) + '/' + k.daily_limit);
   if (k.hourly_limit > 0) parts.push('本小时 ' + (k.used_hour || 0) + '/' + k.hourly_limit);
+  if (k.max_concurrent > 0) parts.push('在途 ' + (k.in_flight || 0) + '/' + k.max_concurrent);
+  const md = k.model_daily || {};
+  const mu = k.model_used || {};
+  for (const m of Object.keys(md)) {
+    parts.push(m + ' ' + (mu[m] || 0) + '/' + md[m]);
+  }
   return parts.join(' · ');
 }
 function renderKeys() {
@@ -2740,6 +2941,7 @@ function keyFormReset() {
   $('kfRealmCn').checked = false; $('kfRealmGlobal').checked = false;
   $('kfTimeStart').value = ''; $('kfTimeEnd').value = ''; $('kfExpires').value = '';
   $('kfDaily').value = ''; $('kfHourly').value = '';
+  $('kfConc').value = ''; $('kfModelDaily').value = '';
   $('kfAcctSearch').value = ''; $('kfAcctRealm').value = '';
   $('kfExclusive').checked = false;
   $('keyFormTitle').textContent = '新建密钥';
@@ -2766,6 +2968,8 @@ function editKey(id) {
   $('kfExpires').value = k.expires_at > 0 ? toLocalInput(k.expires_at) : '';
   $('kfDaily').value = k.daily_limit > 0 ? String(k.daily_limit) : '';
   $('kfHourly').value = k.hourly_limit > 0 ? String(k.hourly_limit) : '';
+  $('kfConc').value = k.max_concurrent > 0 ? String(k.max_concurrent) : '';
+  $('kfModelDaily').value = modelDailyText(k.model_daily);
   $('kfAcctSearch').value = ''; $('kfAcctRealm').value = '';
   $('keyFormTitle').textContent = '编辑密钥：' + (k.name || k.id);
   $('kfCancel').hidden = false;
@@ -2795,6 +2999,8 @@ function collectKeyBody() {
     expires_at: ex ? Math.floor(new Date(ex).getTime() / 1000) : 0,
     daily_limit: intOr0($('kfDaily').value),
     hourly_limit: intOr0($('kfHourly').value),
+    max_concurrent: intOr0($('kfConc').value),
+    model_daily: parseModelDaily($('kfModelDaily').value),
   };
 }
 async function toggleKey(id) {
@@ -3065,3 +3271,160 @@ async function phVerify() {
 }
 $('phSend').onclick = phSend;
 $('phVerify').onclick = phVerify;
+
+/* ── 上游与路由（只读视图）─────────────────────────────────────────
+   只读 /status 的 upstreams + routing；与其它视图共用 api()/esc()，
+   不再各自复制一份请求与转义逻辑（三份重复实现的漂移只是时间问题）。
+   /status 是顶层接口（不在 /panel/api/ 下），所以这里单独走一次 fetch。 */
+function authHeaders() {
+  const h = {};
+  const k = localStorage.getItem(LS_KEY);
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  return h;
+}
+function routeHours(routing, name) {
+  if (!routing || !routing.hours || !routing.hours[name]) return '全天';
+  return routing.hours[name].join('、');
+}
+function renderRoutes(d) {
+  const upBody = $('routeUpBody'), aliasBody = $('routeAliasBody');
+  if (!upBody || !aliasBody) return;
+  const ups = (d && d.upstreams) || [];
+  const routing = (d && d.routing) || {};
+  const rows = ups.map(u => {
+    const accts = u.accounts != null ? u.accounts : (u.name === 'workbuddy' ? (d.total || 0) : '-');
+    let models = '动态目录';
+    if (u.models && u.models.length) {
+      const ids = u.models.map(m => m.id || m);
+      models = ids.slice(0, 6).join('、') + (ids.length > 6 ? ' …' : '');
+    }
+    return '<tr><td><b>' + esc(u.label || u.name) + '</b></td><td>' + esc(u.kind) +
+      '</td><td>' + esc(accts) + '</td><td>' + esc(models) +
+      '</td><td>' + esc(routeHours(routing, u.name)) + '</td></tr>';
+  });
+  upBody.innerHTML = rows.length ? rows.join('') :
+    '<tr><td colspan="5" class="empty">未查询到上游信息</td></tr>';
+
+  const aliases = routing.aliases || {};
+  const fallback = routing.fallback || {};
+  const arows = [];
+  for (const name of Object.keys(aliases)) {
+    const target = aliases[name];
+    const chain = fallback[target] || fallback[name] || [];
+    arows.push('<tr><td><b>' + esc(name) + '</b></td><td>' + esc(target) +
+      '</td><td>' + esc(chain.length ? chain.join(' → ') : '—') + '</td></tr>');
+  }
+  for (const m of Object.keys(fallback)) {
+    if (aliases[m]) continue;
+    arows.push('<tr><td class="empty">—</td><td>' + esc(m) +
+      '</td><td>' + esc(fallback[m].join(' → ')) + '</td></tr>');
+  }
+  aliasBody.innerHTML = arows.length ? arows.join('') :
+    '<tr><td colspan="3" class="empty">未配置别名与降级链</td></tr>';
+  $('routeNote').textContent = routing.enabled ? '路由策略已启用' : '路由策略未配置';
+}
+async function loadRoutes() {
+  try {
+    const r = await fetch('/status', { headers: authHeaders(), cache: 'no-store' });
+    if (r.ok) renderRoutes(await r.json());
+  } catch (e) { /* 只读卡片失败静默 */ }
+}
+
+/* ── Qoder 签到 ─────────────────────────────────────────────────── */
+function renderQoder(d) {
+  const box = $('qoderBox');
+  if (!box) return;
+  if (!d || !d.enabled) { box.hidden = true; return; }
+  box.hidden = false;
+  $('qkCurrent').textContent = (d.current || 0) + ' 天';
+  $('qkTotal').textContent = (d.total || 0) + ' 天';
+  $('qkState').textContent = (d.current || 0) > 0 ? '已连续' : '未开始';
+  const list = d.recent || [];
+  $('qkDots').innerHTML = list.length ? list.map(x => {
+    const on = (x.count || 0) > 0;
+    return '<span title="' + esc(x.date) + '" style="display:inline-block;width:8px;height:8px;' +
+      'margin:1px;border-radius:2px;background:' + (on ? 'var(--ok,#2ecc71)' : 'var(--line,#e5e5e5)') + '"></span>';
+  }).join('') : '—';
+}
+async function loadQoder() {
+  try { renderQoder(await api('qoder/checkin')); } catch (e) { /* 未配置时静默 */ }
+}
+$('btnQoderCheckin').onclick = async () => {
+  const b = $('btnQoderCheckin');
+  if (b.disabled) return;
+  b.disabled = true;
+  const note = $('qkNote');
+  note.textContent = '领取中…';
+  try {
+    const r = await api('qoder/checkin', { method: 'POST', body: '{}' });
+    const lines = (r.results || []).map(x => {
+      if (x.status === 'CLAIMED') return (x.replayed ? '已领取过' : '领取成功') + (x.campaign_key ? ' · ' + x.campaign_key : '');
+      if (x.status === 'NOTHING_TO_CLAIM') return '暂无可领取活动';
+      return (x.campaign_key || '错误') + '：' + (x.reason || x.status);
+    });
+    note.textContent = lines.join('；') || '没有返回结果';
+    loadQoder();
+  } catch (e) { note.textContent = e.message; }
+  finally { b.disabled = false; }
+};
+
+/* ── 配置备份 ───────────────────────────────────────────────────── */
+function renderBackups(d) {
+  const body = $('bkBody');
+  if (!body) return;
+  if (!d || !d.enabled) {
+    body.innerHTML = '<tr><td colspan="2" class="empty">备份未启用</td></tr>';
+    $('bkNote').textContent = '未启用';
+    return;
+  }
+  const list = d.backups || [];
+  $('bkNote').textContent = list.length + ' 份';
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="2" class="empty">暂无备份（保存一次配置后自动生成）</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map(n =>
+    '<tr><td>' + esc(n) + '</td><td><button class="xs" data-bk="' + esc(n) + '">恢复</button></td></tr>'
+  ).join('');
+  body.querySelectorAll('button[data-bk]').forEach(b => b.onclick = async () => {
+    const name = b.dataset.bk;
+    if (!confirm('用备份覆盖当前配置？\n\n' + name)) return;
+    b.disabled = true;
+    try {
+      await api('backups/restore', { method: 'POST', body: JSON.stringify({ name: name }) });
+      toast('配置已恢复，部分字段需重启', 'ok');
+      $('bkNote').textContent = '已恢复（部分字段需重启）';
+    } catch (e) { toast('恢复失败：' + e.message, 'err'); }
+    finally { b.disabled = false; }
+  });
+}
+async function loadBackups() {
+  try { renderBackups(await api('backups')); } catch (e) { /* 静默 */ }
+}
+$('btnBackups').onclick = loadBackups;
+
+/* ── 按分组用量 ─────────────────────────────────────────────────── */
+function renderUsageGroups(rows) {
+  const body = $('usGroupBody');
+  if (!body) return;
+  if (!rows || !rows.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">暂无分组数据</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r =>
+    '<tr><td class="mark" aria-hidden="true"></td>' +
+    '<td>' + esc(r.key) + '</td>' +
+    '<td class="num">' + fmtInt(r.requests) + '</td>' +
+    '<td class="num">' + fmtInt(r.errors) + '</td>' +
+    '<td class="num">' + fmtInt(r.prompt_tokens) + '</td>' +
+    '<td class="num">' + fmtInt(r.completion_tokens) + '</td>' +
+    '<td class="num">' + fmtInt(r.total_tokens) + '</td>' +
+    '<td class="num">' + (r.credits_n > 0 ? Number(r.credits).toFixed(2) : '—') + '</td></tr>'
+  ).join('');
+}
+async function loadUsageGroups() {
+  try {
+    const d = await api('usage?hours=72');
+    renderUsageGroups(d.by_group);
+  } catch (e) { /* 静默 */ }
+}

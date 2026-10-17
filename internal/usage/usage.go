@@ -55,6 +55,10 @@ type bucket struct {
 	// Client 调用方客户端标签（识别不到时形如 "未识别: <UA首段>"）。
 	// 维度加在 model 之后：同一个模型可能被多个客户端调用，分开才看得清。
 	Client string  `json:"cl"`
+	// Group 调用方密钥的分组标签（keys.Entry.Group）。空 = 未分组。
+	// 单独一维而不是拼进 Client：分组的用途是按客户对账，和"用什么客户端"
+	// 是两个正交问题，拼在一起以后想拆就拆不开了。
+	Group string  `json:"g,omitempty"`
 	Req    int64   `json:"q"`  // 请求数（含失败）
 	Err    int64   `json:"e"`  // 失败数
 	PT     int64   `json:"p"`  // prompt tokens
@@ -69,6 +73,15 @@ type bucket struct {
 	// 「—」）与「观测到 0 消耗」（免费模型：CrN>0 且 Cr=0）。
 	Cr  float64 `json:"cr,omitempty"`
 	CrN int64   `json:"crn,omitempty"`
+	// TokN 有 token 明细的请求数：与 Req 的差就是「上游没回 usage」的请求数。
+	// 这是「未记录」口径的唯一权威来源——不能用 PT/CT/TT 是否为 0 反推：
+	// 同一个桶里可能混着「带明细」与「不带明细」的请求，累计值会互相掩盖。
+	TokN int64 `json:"tn,omitempty"`
+	// CrB 计费量合计（= 实测 Credits × 调用方倍率）。与 Cr 分开存：
+	// Cr 是给上游交的钱（对账硬数据，不可被倍率污染），CrB 是向调用方收的钱。
+	// 两者的差就是毛利，混在一个字段里这笔账永远算不清。
+	// 未配置倍率（=1.0）时 CrB 恒等于 Cr，不额外占心智。
+	CrB float64 `json:"crb,omitempty"`
 }
 
 // file 落盘结构。
@@ -156,13 +169,25 @@ type Delta struct {
 	// 被读成「没消耗」。
 	Credits    float64
 	HasCredits bool
+	// BilledCredits 计费量：本次尝试按调用方倍率换算后应收的积分。
+	// HasBilled=false 表示这次没有可计费的观测（与 HasCredits 同判据：
+	// 上游没给 credit 就无从计费——不能凭 token 数猜一个价格出来）。
+	// 倍率为 1 时它与 Credits 相等，调用方仍应填它：空着会被读成「无观测」。
+	BilledCredits float64
+	HasBilled     bool
 }
 
 // Add 记录一次请求尝试。
 //
 // ok=false 表示该次尝试失败（传输错误 / 上游 >=400 / 解析失败）。失败尝试通常
 // 没有 usage，但**仍要计入请求数与失败数**——重试放大正是靠这一列才看得出来。
+// Add 记录一次请求尝试（不带分组）。等价于 AddGrouped(..., "", ...)。
 func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta, ok bool) {
+	r.AddGrouped(now, realm, uid, model, client, "", d, ok)
+}
+
+// AddGrouped 同 Add，额外记录调用方密钥分组（用于按客户对账）。
+func (r *Recorder) AddGrouped(now time.Time, realm, uid, model, client, group string, d Delta, ok bool) {
 	if r == nil {
 		return
 	}
@@ -178,14 +203,14 @@ func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta,
 		client = "(unknown)"
 	}
 	scope := "h:" + now.Format(hourLayout)
-	key := scope + "|" + realm + "|" + uid + "|" + model + "|" + client
+	key := scope + "|" + realm + "|" + uid + "|" + model + "|" + client + "|" + group
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	b := r.buckets[key]
 	if b == nil {
-		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Client: client}
+		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Client: client, Group: group}
 		r.buckets[key] = b
 	}
 	b.Req++
@@ -200,10 +225,14 @@ func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta,
 	}
 	if d.HasTotal {
 		b.TT += d.TotalTokens
+		b.TokN++ // 有 total 明细：计入「已记录」
 	} else if d.HasPromptTokens || d.HasCompletion {
 		// 上游没给 total：用 pt+ct 兜底，保证总量口径连续。
 		b.TT += d.PromptTokens + d.CompletionTokens
+		b.TokN++
 	}
+	// 三者全缺（HasPromptTokens/HasCompletion/HasTotal 都 false）→ 不计 TokN：
+	// 这次请求的 token 明细「未记录」，由 Req - TokN 表达。
 	if d.HasLatency {
 		b.LatMs += d.LatencyMs
 		b.LatN++
@@ -215,6 +244,9 @@ func (r *Recorder) Add(now time.Time, realm, uid, model, client string, d Delta,
 	if d.HasCredits {
 		b.Cr += d.Credits
 		b.CrN++
+	}
+	if d.HasBilled {
+		b.CrB += d.BilledCredits
 	}
 	r.dirty = true
 }
@@ -241,7 +273,7 @@ func (r *Recorder) Rollup(now time.Time) {
 			continue
 		}
 		day := "d:" + ts.Format(dayLayout)
-		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Client})
+		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Client + "|" + b.Group})
 	}
 	for _, m := range moves {
 		src := r.buckets[m.from]
@@ -266,6 +298,8 @@ func (r *Recorder) Rollup(now time.Time) {
 			dst.TPSN += src.TPSN
 			dst.Cr += src.Cr
 			dst.CrN += src.CrN
+			dst.TokN += src.TokN
+			dst.CrB += src.CrB
 		}
 		delete(r.buckets, m.from)
 	}
@@ -355,6 +389,11 @@ type Agg struct {
 	// CreditsN 是有成本观测的请求数：0 表示本口径没有样本（不是「消耗 0」）。
 	Credits  float64 `json:"credits"`
 	CreditsN int64   `json:"credits_n"`
+	// BilledCredits 计费量合计（实测 Credits × 调用方倍率）。
+	// 与 Credits 并列而非合并：Credits 是对上游的支出，BilledCredits 是向调用方
+	// 的收入，差值即毛利。合成一个字段后这笔账就断了。
+	// 无倍率配置时恒等于 Credits（不影响既有口径）。
+	BilledCredits float64 `json:"billed_credits"`
 }
 
 // aggAcc 是聚合过程中的累加器：Agg 只放已算好的结果，均值需要样本数才能
@@ -379,6 +418,7 @@ func (g *aggAcc) add(b *bucket) {
 	g.tpsSamples += b.TPSN
 	g.Credits += b.Cr
 	g.CreditsN += b.CrN
+	g.BilledCredits += b.CrB
 }
 
 func (g *aggAcc) finish() Agg {
@@ -415,6 +455,8 @@ type Snapshot struct {
 	ByModel   []KeyedAgg `json:"by_model"`
 	// ByClient 按调用方客户端聚合（Codex / Claude Code / WorkBuddy / 未识别…）。
 	ByClient  []KeyedAgg `json:"by_client"`
+	// ByGroup 按调用方密钥分组聚合（keys.Entry.Group）。空分组归为 "(未分组)"。
+	ByGroup   []KeyedAgg `json:"by_group"`
 	Series    []Point    `json:"series"`
 	Buckets   int        `json:"buckets"`
 	FileBytes int64      `json:"file_bytes"`
@@ -454,6 +496,7 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 	acctRealm := map[string]string{}
 	modelAgg := map[string]*aggAcc{}
 	clientAgg := map[string]*aggAcc{}
+	groupAgg := map[string]*aggAcc{}
 	hourSeries := map[string]*aggAcc{}
 	daySeries := map[string]*aggAcc{}
 
@@ -513,6 +556,15 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 		}
 		clientAgg[b.Client].add(b)
 
+		groupKey := b.Group
+		if groupKey == "" {
+			groupKey = "(未分组)"
+		}
+		if groupAgg[groupKey] == nil {
+			groupAgg[groupKey] = &aggAcc{}
+		}
+		groupAgg[groupKey].add(b)
+
 		if strings.HasPrefix(b.Scope, "h:") {
 			scope := strings.TrimPrefix(b.Scope, "h:")
 			if hourSeries[scope] == nil {
@@ -536,6 +588,7 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 		}),
 		ByModel:   keyed(modelAgg, func(k string) (string, string) { return k, "" }),
 		ByClient:  keyed(clientAgg, func(k string) (string, string) { return k, "" }),
+		ByGroup:   keyed(groupAgg, func(k string) (string, string) { return k, "" }),
 		Buckets:   matched,
 		Generated: time.Now().Format(time.RFC3339),
 	}
