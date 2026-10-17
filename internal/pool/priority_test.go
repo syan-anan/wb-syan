@@ -191,3 +191,45 @@ func TestPriorityPersistRoundTrip(t *testing.T) {
 		t.Fatal("u3 不该存在")
 	}
 }
+
+// SetOrder 整表拖动排序：第 1 个拿 N、最后 1 个拿 1；未知 uid 跳过；
+// 空切片不置脏（一次误调用不该把整池标成待落盘）。
+func TestSetOrderAssignsContiguousPriorities(t *testing.T) {
+	p := New("")
+	for _, uid := range []string{"u1", "u2", "u3"} {
+		p.Add(&auth.Auth{UID: uid})
+	}
+	got := p.SetOrder([]string{"u3", "u1", "u2"})
+	if got["u3"] != 3 || got["u1"] != 2 || got["u2"] != 1 {
+		t.Fatalf("SetOrder=%v want u3:3 u1:2 u2:1", got)
+	}
+	if v := p.byUID["u3"].priority; v != 3 {
+		t.Fatalf("u3 priority=%d want 3", v)
+	}
+	// 未知 uid 跳过：不出现在返回里，也不影响已存在账号的档位
+	got = p.SetOrder([]string{"u2", "nope"})
+	if _, ok := got["nope"]; ok {
+		t.Fatal("unknown uid must be skipped")
+	}
+	if got["u2"] != 2 {
+		t.Fatalf("u2 priority=%d want 2", got["u2"])
+	}
+}
+
+// 拖动后的第一个账号稳定胜出（与连点「上移」同一档：压过加权随机）。
+func TestSetOrderDrivesPick(t *testing.T) {
+	withNoPickGap(t)
+	p := New("")
+	for _, uid := range []string{"u1", "u2", "u3"} {
+		p.Add(&auth.Auth{UID: uid})
+	}
+	p.SetCredits("u1", 50000, 0)
+	p.SetCredits("u2", 40000, 0)
+	p.SetCredits("u3", 1, 0)
+	p.SetOrder([]string{"u3", "u1", "u2"})
+	for i := 0; i < 200; i++ {
+		if got := p.Pick(); got == nil || got.UID != "u3" {
+			t.Fatalf("pick=%v want u3（拖到第一位应压过加权随机）", got)
+		}
+	}
+}

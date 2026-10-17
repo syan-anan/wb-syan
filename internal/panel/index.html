@@ -271,7 +271,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 模型表：紧凑一些，7 列在常见窗口下尽量免横向滚动 */
 /* 9 项可用率条需要 ~700px 才能一行排开；给表格一个下限，宁可窄屏横向滚动
    也不要把「延迟/吞吐/消耗/明细」压成四个窄缝。 */
-.acc.md { min-width: 1120px; }
+.acc.md { min-width: 960px; }
 /* 模型表：列多，内边距压到 7px；「积分倍率 / 默认档」不再吃宽度，
    「支持的思考档位」只留够放标签的最小宽度——省出来的横向空间给可用率列。 */
 .acc.md th, .acc.md td { padding: 7px 8px; }
@@ -281,7 +281,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
    7 项横排：今日调用 / 今日成功 / 近 30 天调用 / 近 30 天成功 / 状态 /
    延迟 / 吞吐。每项「标签在上、值在下」，不额外占行高。
    从没被调用过的模型整条显示「—」，不伪造 100%。 */
-.acc.md th.mdstat-h { min-width: 596px; }
+.acc.md th.mdstat-h { min-width: 470px; }
 .acc.md td.mdstat { padding: 6px 8px; }
 .mdst { display: flex; align-items: stretch; }
 .mds {
@@ -442,10 +442,12 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 .hr { height: 1px; background: var(--line-soft); margin: 4px 0 16px; }
 .switch { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; }
 .switch .lb { font-size: 13.5px; }
+/* 保存栏不再 sticky：贴在视口底部时会盖住后面的「配置备份」卡片（滚动时
+   两者重叠，按钮浮在别人上面）。改成表单末尾的普通操作栏，随内容滚走。 */
 .savebar {
   display: flex; align-items: center; gap: 12px; padding: 13px 17px;
-  border-top: 1px solid var(--line-soft); background: var(--surface-2);
-  position: sticky; bottom: 0;
+  margin-top: 12px; border: 1px solid var(--line-soft); border-radius: 12px;
+  background: var(--surface-2);
 }
 .savebar .grow { flex: 1; }
 .restart-note { color: var(--warn); font-size: 12.5px; }
@@ -653,6 +655,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#models" data-view="models">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
         模型与档位</a></li>
+      <li><a href="#qoder" data-view="qoder">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.2"/><path d="M9.6 9.6 12.4 12.4"/><path d="M8 5.2v5.6M5.6 6.6 8 8l2.4-1.4"/></svg>
+        Qoder</a></li>
       <li><a href="#apikeys" data-view="apikeys">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.6" cy="10.4" r="2.7"/><path d="M7.6 8.4 13.2 2.8M11.4 4.6l1.4 1.4M9.9 6.1l1.4 1.4"/></svg>
         密钥管理</a></li>
@@ -672,9 +677,25 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <div class="row" id="navUpdRow" style="margin-top:6px">
         <button type="button" class="updchk" id="navUpdChk" title="立即检查 GitHub 上有没有新版本">检查更新</button>
         <button type="button" class="updchip" id="navUpdChip" aria-haspopup="dialog" hidden>有新版本</button>
+        <button type="button" class="updchk navset-btn" id="navSetBtn" aria-haspopup="dialog" aria-expanded="false"
+                title="侧边栏设置：拖动排序 / 隐藏不常用项">⚙ 侧栏</button>
       </div>
     </div>
   </nav>
+
+  <!-- 侧边栏设置浮层：勾选要显示的栏目（隐藏只是收起入口，视图本身还在）。
+       顺序调整不在这里做——直接在侧栏里拖动每项左侧的 ⠿ 手柄。 -->
+  <div class="navset" id="navSetPop" role="dialog" aria-label="侧边栏设置" hidden>
+    <div class="navset-hd"><span>侧边栏设置</span>
+      <button type="button" class="navset-x" id="navSetClose" aria-label="关闭">×</button></div>
+    <div class="navset-tip">勾选要显示的栏目；顺序在侧边栏里拖动 <b>⠿</b> 手柄调整。</div>
+    <div class="navset-list" id="navSetList"></div>
+    <div class="navset-ft">
+      <button type="button" class="xs ghost" id="navSetReset">恢复默认</button>
+      <span class="grow"></span>
+      <span class="note">勾选即显示</span>
+    </div>
+  </div>
 
   <!-- 在线更新提示浮层：数据来自 /panel/api/update（服务端 6h 一次的缓存快照）。
        没有新版本 / 关掉检查 / 外网不通时整块保持隐藏。 -->
@@ -810,12 +831,18 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
               <option value="global">国际 global</option>
             </select>
           </label>
+          <label class="sel-note">统计
+            <select id="mdRange" title="可用率统计口径：只显示所选窗口的调用/成功（另一档在状态格悬停可见）">
+              <option value="today">今日</option>
+              <option value="30d">近 30 天</option>
+            </select>
+          </label>
           <span class="note" id="mdNote">实时查询上游</span>
           <button class="xs" id="btnModels">重新获取</button>
         </header>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th class="mdstat-h" title="近 30 天可用率：今日 / 近 30 天调用与成功、最近 24 个整点状态条、平均延迟、平均吞吐。没有观测的模型显示「—」，不伪造 100%">可用率</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>默认档</th><th>支持的思考档位</th><th class="mdstat-h" title="按右上「统计」选择的窗口显示调用/成功；状态条固定最近 24 个整点，悬停可看另一窗口。没有观测的模型显示「—」，不伪造 100%">可用率</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>
@@ -841,20 +868,52 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           </table>
         </div>
 
-        <div class="tbl-wrap" id="qoderBox" style="margin-top:10px" hidden>
+        
+      </div>
+    </section>
+
+
+    <!-- Qoder（非 WorkBuddy 上游）：独立一栏，点进来全是这个上游自己的配置与状态。
+         数据和 WorkBuddy 账号池完全分开——Qoder 的 token 不参与选号、不进账号池统计。 -->
+    <section class="view" id="view-qoder" hidden>
+      <div class="box">
+        <header>
+          <h3>Qoder 上游 <span class="hint">模型前缀 qoder: 的请求走这条链路，不进 WorkBuddy 选号池</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="qdNote">只读 · 改 config.json 后刷新</span>
+          <button class="xs" id="btnQoderReload">刷新</button>
+        </header>
+        <div class="pad">
+          <div class="qd-kpi" id="qdKpi"></div>
+          <div class="qd-cfg" id="qdCfgBody"></div>
+        </div>
+      </div>
+
+      <div class="box">
+        <header>
+          <h3>Qoder 签到</h3>
+          <span class="grow"></span>
+          <span class="note" id="qkNote">—</span>
+          <button class="xs primary" id="btnQoderCheckin">立即签到</button>
+        </header>
+        <div class="pad">
+          <div class="qd-kpi" id="qkKpi"></div>
+          <div class="qd-dots" id="qkDots">—</div>
+        </div>
+      </div>
+
+      <div class="box">
+        <header>
+          <h3>Qoder 可用模型</h3>
+          <span class="grow"></span>
+          <span class="note" id="qdModelNote">—</span>
+          <button class="xs" id="btnQoderModels">重新获取</button>
+        </header>
+        <div class="tbl-wrap">
           <table class="acc md">
-            <thead><tr><th>Qoder 签到</th><th>连续</th><th>累计</th><th>最近 30 天</th><th></th></tr></thead>
-            <tbody>
-              <tr>
-                <td><b id="qkState">-</b></td>
-                <td id="qkCurrent">-</td>
-                <td id="qkTotal">-</td>
-                <td id="qkDots" class="qk-dots">-</td>
-                <td><button class="xs" id="btnQoderCheckin">立即签到</button></td>
-              </tr>
-            </tbody>
+            <thead><tr><th>模型</th><th>名称</th><th>上下文</th><th>最大输出</th><th>思考档位</th></tr></thead>
+            <tbody id="qdModelBody"></tbody>
           </table>
-          <div class="note" id="qkNote" style="margin-top:6px"></div>
         </div>
       </div>
     </section>
@@ -938,14 +997,14 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 
       <div class="box" id="usAccBox">
         <header><h3>按账号</h3><span class="grow"></span>
-          <span class="note">请求数含失败尝试 · 积分已用为账号池累计口径</span></header>
+          <span class="note">请求数含失败尝试 · 积分已用按当前窗口统计（累计口径在悬停提示里）</span></header>
         <div class="tbl-wrap">
           <table class="acc">
             <thead><tr>
               <th class="mark" aria-hidden="true"></th><th>账号</th><th>域</th>
               <th class="num">请求</th><th class="num">失败</th>
               <th class="num">Prompt</th><th class="num">Completion</th><th class="num">合计</th>
-              <th class="num" title="累计口径：账号套餐总额度 − 剩余（覆盖全部历史，含逐请求记账上线前）；本窗口逐请求实测值在单元格 tooltip 里">积分已用</th>
+              <th class="num" title="按当前窗口逐请求实测（上游 usage.credit 累加）；账号池累计口径（总额度 − 剩余，覆盖全部历史）在单元格 tooltip 里">积分已用</th>
               <th class="num">均延迟</th><th class="num">均速率</th>
             </tr></thead>
             <tbody id="usAccBody"></tbody>

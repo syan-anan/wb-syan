@@ -4,6 +4,10 @@ const LS_KEY = 'wb-syan.key', LS_THEME = 'wb-syan.theme';
 let theme = localStorage.getItem(LS_THEME) || 'auto';   // auto | light | dark
 let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
+// 模型目录 / 探测上限 / 可用率缓存。放在全局态里而不是模型页代码块里：#qoder
+// 视图在页面初始化时就会读 mdList（点 hash 直达），若声明留在文件后半段，
+// 会撞上 let 的 TDZ（Cannot access 'mdList' before initialization）。
+let mdList = [], mdProbes = {}, mdStats = {};
 let logPin = true, loginState = null, loginTimer = null;
 let keysCache = null, keyEditing = null;
 // 账号池排序维度（持久化，刷新后保持）：'added' 按添加顺序（默认）/ 'realm' 国内·国际。
@@ -397,7 +401,7 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', apikeys: '密钥管理', config: '配置', logs: '运行日志', diagnose: '错误诊断' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', qoder: 'Qoder', apikeys: '密钥管理', config: '配置', logs: '运行日志', diagnose: '错误诊断' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
@@ -405,7 +409,8 @@ function go(v) {
   $('ttl').textContent = TITLES[v];
   if (v === 'accounts') loadCompensation();
   if (v === 'models' && !$('mdBody').children.length) loadModels();
-  if (v === 'models') { loadRoutes(); loadQoder(); }
+  if (v === 'models') loadRoutes();
+  if (v === 'qoder') loadQoderPage();
   if (v === 'apikeys') loadKeys();
   if (v === 'config') { loadConfig(); loadBackups(); }
   if (v === 'logs') loadLogs();
@@ -415,6 +420,163 @@ function go(v) {
   if (v === 'taskscenter') reattachQueueView();
   if (v === 'growth') loadGrowth();
 }
+
+/* ── 侧边栏：拖动排序 + 显隐设置 ────────────────────────────────────
+   顺序与显隐都存 localStorage（纯前端偏好，不进 config.json、不影响网关）。
+   拖动手柄是每个 li 里的 ⠿（悬停才显形），落点用 li 的上下半区判断；
+   松手后只改 DOM + 存一行 JSON，不需要请求后端。
+   隐藏 = .nav-hidden（display:none），视图本身照旧存在，直接改 hash 仍能打开。 */
+const NAV_ORDER_KEY = 'wb-syan.navorder', NAV_HIDE_KEY = 'wb-syan.navhidden';
+const navUL = document.querySelector('.nav ul');
+function navItems() { return navUL ? Array.prototype.slice.call(navUL.children) : []; }
+function navKeyOf(li) {
+  const a = li && li.querySelector ? li.querySelector('a[data-view]') : null;
+  return a ? a.dataset.view : '';
+}
+function readLS(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const v = JSON.parse(raw);
+    return v == null ? fallback : v;
+  } catch (e) { return fallback; }
+}
+// 首次加载时记下 HTML 的原始顺序，「恢复默认」用它重排（不受已存顺序影响）
+const NAV_BASE_ORDER = navItems().map(navKeyOf).filter(Boolean);
+function saveNavOrder() {
+  localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(navItems().map(navKeyOf).filter(Boolean)));
+}
+function saveNavHidden() {
+  const hid = navItems().filter(li => li.classList.contains('nav-hidden')).map(navKeyOf).filter(Boolean);
+  localStorage.setItem(NAV_HIDE_KEY, JSON.stringify(hid));
+}
+function applyNavOrder(keys) {
+  if (!Array.isArray(keys) || !keys.length) return;
+  const byKey = {};
+  navItems().forEach(li => { const k = navKeyOf(li); if (k) byKey[k] = li; });
+  keys.forEach(k => { if (byKey[k]) { navUL.appendChild(byKey[k]); delete byKey[k]; } });
+  // 新版本新增、老偏好里没有的栏目：按 HTML 原顺序补到末尾，不会被"吃掉"
+  navItems().forEach(li => { if (byKey[navKeyOf(li)]) navUL.appendChild(li); });
+}
+function ensureNavGrips() {
+  navItems().forEach(li => {
+    if (!navKeyOf(li) || li.querySelector('.nav-grip')) return;
+    const g = document.createElement('span');
+    g.className = 'nav-grip';
+    g.textContent = '⠿';
+    g.title = '按住拖动：调整栏目顺序';
+    g.draggable = true;
+    li.appendChild(g);
+  });
+}
+function applyNavPrefs() {
+  applyNavOrder(readLS(NAV_ORDER_KEY, []));
+  const hid = readLS(NAV_HIDE_KEY, []);
+  const hs = {};
+  (Array.isArray(hid) ? hid : []).forEach(k => { hs[k] = 1; });
+  navItems().forEach(li => li.classList.toggle('nav-hidden', !!hs[navKeyOf(li)]));
+  ensureNavGrips();
+}
+let navDragLi = null;
+function clearNavMarks() {
+  navItems().forEach(li => li.classList.remove('drop-before', 'drop-after'));
+}
+if (navUL) {
+  navUL.addEventListener('dragstart', ev => {
+    const g = ev.target.closest && ev.target.closest('.nav-grip');
+    if (!g) { ev.preventDefault(); return; }
+    navDragLi = g.parentElement;
+    navDragLi.classList.add('nav-dragging');
+    try {
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', navKeyOf(navDragLi));
+      ev.dataTransfer.setDragImage(navDragLi, 20, 16);
+    } catch (e) { /* 忽略 */ }
+  });
+  navUL.addEventListener('dragover', ev => {
+    if (!navDragLi) return;
+    ev.preventDefault();
+    const li = ev.target.closest && ev.target.closest('li');
+    clearNavMarks();
+    if (!li || li === navDragLi) return;
+    const r = li.getBoundingClientRect();
+    li.classList.add((ev.clientY - r.top) > r.height / 2 ? 'drop-after' : 'drop-before');
+  });
+  navUL.addEventListener('drop', ev => { if (navDragLi) ev.preventDefault(); });
+  navUL.addEventListener('dragend', () => {
+    const li = navDragLi;
+    navDragLi = null;
+    if (!li) return;
+    li.classList.remove('nav-dragging');
+    const mark = navUL.querySelector('li.drop-before, li.drop-after');
+    const after = !!(mark && mark.classList.contains('drop-after'));
+    clearNavMarks();
+    if (!mark) return;
+    navUL.insertBefore(li, after ? mark.nextSibling : mark);
+    saveNavOrder();
+    renderNavSetList();
+  });
+}
+function renderNavSetList() {
+  const host = $('navSetList');
+  if (!host) return;
+  host.innerHTML = navItems().map(li => {
+    const k = navKeyOf(li);
+    if (!k) return '';
+    const a = li.querySelector('a');
+    const label = a ? a.textContent.trim() : k;
+    return '<label><input type="checkbox" data-v="' + esc(k) + '"' +
+      (li.classList.contains('nav-hidden') ? '' : ' checked') + '>' + esc(label) + '</label>';
+  }).join('');
+}
+function openNavSet(open) {
+  const pop = $('navSetPop'), btn = $('navSetBtn');
+  if (!pop || !btn) return;
+  pop.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!open) return;
+  renderNavSetList();
+  const r = btn.getBoundingClientRect();
+  // 按钮在侧栏底部：贴着侧栏右缘展开，而不是压在导航项上（那样弹层会把
+  // 刚勾选的栏目全挡住，改一项就得先关一次）。窄窗口再回退到按钮左侧。
+  const navEl = document.querySelector('.nav');
+  const nr = navEl ? navEl.getBoundingClientRect() : null;
+  const wantLeft = (nr && r.left < nr.right - 4) ? nr.right + 10 : r.left;
+  pop.style.left = Math.max(10, Math.min(wantLeft, window.innerWidth - 258)) + 'px';
+  const h = pop.offsetHeight || 260;
+  let top = r.top - h - 8;
+  if (top < 12) top = Math.min(window.innerHeight - h - 12, r.bottom + 8);
+  pop.style.top = Math.max(12, top) + 'px';
+}
+if ($('navSetBtn')) {
+  $('navSetBtn').onclick = ev => { ev.stopPropagation(); openNavSet($('navSetPop').hidden); };
+  $('navSetClose').onclick = () => openNavSet(false);
+  $('navSetList').addEventListener('change', ev => {
+    const cb = ev.target.closest && ev.target.closest('input[data-v]');
+    if (!cb) return;
+    const li = navItems().filter(x => navKeyOf(x) === cb.dataset.v)[0];
+    if (!li) return;
+    li.classList.toggle('nav-hidden', !cb.checked);
+    saveNavHidden();
+  });
+  $('navSetReset').onclick = () => {
+    localStorage.removeItem(NAV_ORDER_KEY);
+    localStorage.removeItem(NAV_HIDE_KEY);
+    applyNavOrder(NAV_BASE_ORDER);
+    navItems().forEach(li => li.classList.remove('nav-hidden'));
+    renderNavSetList();
+    toast('侧边栏已恢复默认', 'ok');
+  };
+  document.addEventListener('click', ev => {
+    if ($('navSetPop').hidden) return;
+    if (ev.target.closest && (ev.target.closest('#navSetPop') || ev.target.closest('#navSetBtn'))) return;
+    openNavSet(false);
+  });
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') openNavSet(false); });
+  addEventListener('resize', () => { if (!$('navSetPop').hidden) openNavSet(true); });
+}
+applyNavPrefs();
+
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
 
@@ -507,6 +669,14 @@ function renderAccounts(list) {
   }
   // 有总额度（credits_total）→ 进度条按自身 剩余/总额 百分比；旧数据无总额 → 退回池内最高=100%
   const maxCred = Math.max(1, ...list.map(s => s.credits || 0));
+  // 整表拖动后 priority 是连续的 1..N，与列表位置完全一致——这时「手动 +7」徽标
+  // 会把整列铺满却没有信息量（谁在前谁在后，看位置就知道）。只有稀疏优先级
+  // （历史 ↑↓ 留下的单个值）才显示徽标。
+  const fullOrder = (() => {
+    const ps = list.map(s => s.priority || 0);
+    if (ps.some(p => p <= 0)) return false;
+    return new Set(ps).size === ps.length;
+  })();
   tb.innerHTML = list.map(s => {
     const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
     const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
@@ -541,9 +711,9 @@ function renderAccounts(list) {
     const frozen = s.disabled || cool > 0;
     // 手动优先级徽标（priority）：非零才显示——0 是默认态，满屏「自动」等于噪音。
     const pr = s.priority || 0;
-    const prBadge = pr === 0 ? ''
+    const prBadge = (pr === 0 || fullOrder) ? ''
       : '<span class="ord-tag ' + (pr > 0 ? 'up' : 'down') + '" title="手动优先级 ' + pr +
-        '（面板 ↑↓ 调整；0 = 自动排序）">' + (pr > 0 ? '手动优先 +' + pr : '手动靠后 ' + pr) + '</span>';
+        '（拖动排序会重排整表；0 = 自动排序）">' + (pr > 0 ? '手动优先 +' + pr : '手动靠后 ' + pr) + '</span>';
     const tu = s.token_usage || {};
     const req = tu.request_count || 0;
     const totalTok = formatTokenCount(tu.total_tokens);
@@ -551,11 +721,13 @@ function renderAccounts(list) {
     const latency = formatLatency(tu.last_latency_ms);
     const rate = formatRate(tu.last_tokens_per_second);
     const usageTitle = '最近一次：' + req + ' 次 / ' + totalTok + ' / 延迟 ' + latency + ' / ' + rate;
-    return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
+    return '<tr class="' + cls + '" data-uid="' + esc(s.uid) + '" draggable="false" title="uid: ' + esc(s.uid) + '">' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
       '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + prBadge + '</div><div class="id">' + esc(short) + '</div><span class="ord-grp" title="手动排序：压过自动策略，但不创造资格">' +
-        '<button class="xs ghost ord" data-a="order" data-d="up" data-u="' + esc(s.uid) + '" title="上移：优先使用该账号" aria-label="上移">↑</button>' +
-        '<button class="xs ghost ord" data-a="order" data-d="down" data-u="' + esc(s.uid) + '" title="下移：最后才用该账号" aria-label="下移">↓</button>' +
+        // 排序改成整表拖动：手柄只负责"拎起这一行"，顺序由 drop 时一次性提交
+        // （accounts/reorder）。原来的 ↑↓ 每点一次只挪一格，账号一多就要连点。
+        '<span class="ord-drag" data-drag="' + esc(s.uid) + '" role="button" tabindex="0" draggable="true" ' +
+          'title="按住拖动：调整这个账号在池里的先后（不改变可用性）" aria-label="拖动排序">⠿</span>' +
         (pr === 0 ? '' : '<button class="xs ghost ord" data-a="order" data-d="auto" data-u="' + esc(s.uid) + '" title="恢复自动排序（清除手动优先级）" aria-label="恢复自动排序">⟲</button>') +
         '</span></td>' +
       '<td>' + tag + note + '</td>' +
@@ -728,6 +900,57 @@ $('accBody').addEventListener('click', async ev => {
   finally { b.disabled = false; loadOverview(true); }
 });
 
+
+/* ── 账号拖动排序 ───────────────────────────────────────────────────
+   只有 ⠿ 手柄自己带 draggable，行本身不可拖——否则在表里选文字、点按钮都会
+   被当成拖拽起手。落点用「行内的插入位置」判断，松手时先按落点把 <tr> 挪好，
+   再把整表 uid 顺序一次性提交到 POST /panel/api/accounts/reorder。
+   后端写的是连续优先级（第 1 个 N、最后 1），与选号器同一口径，刷新后不会跳。 */
+let accDragRow = null;
+const accBodyEl = $('accBody');
+function accClearMarks() {
+  accBodyEl.querySelectorAll('tr.drop-before, tr.drop-after')
+    .forEach(t => t.classList.remove('drop-before', 'drop-after'));
+}
+accBodyEl.addEventListener('dragstart', ev => {
+  const tr = ev.target.closest && ev.target.closest('tr[data-uid]');
+  if (!tr) { ev.preventDefault(); return; }
+  accDragRow = tr;
+  tr.classList.add('dragging');
+  try {
+    ev.dataTransfer.effectAllowed = 'move';
+    ev.dataTransfer.setData('text/plain', tr.dataset.uid || '');
+    ev.dataTransfer.setDragImage(tr, 24, 18);
+  } catch (e) { /* 个别浏览器不给自定义拖影，忽略 */ }
+});
+accBodyEl.addEventListener('dragover', ev => {
+  if (!accDragRow) return;
+  ev.preventDefault();
+  const tr = ev.target.closest && ev.target.closest('tr[data-uid]');
+  accClearMarks();
+  if (!tr || tr === accDragRow) return;
+  const r = tr.getBoundingClientRect();
+  tr.classList.add((ev.clientY - r.top) > r.height / 2 ? 'drop-after' : 'drop-before');
+});
+accBodyEl.addEventListener('drop', ev => { if (accDragRow) ev.preventDefault(); });
+accBodyEl.addEventListener('dragend', async () => {
+  const row = accDragRow;
+  accDragRow = null;
+  if (!row) return;
+  row.classList.remove('dragging');
+  const mark = accBodyEl.querySelector('tr.drop-before, tr.drop-after');
+  const after = !!(mark && mark.classList.contains('drop-after'));
+  accClearMarks();
+  if (!mark) return;
+  accBodyEl.insertBefore(row, after ? mark.nextSibling : mark);
+  const uids = [...accBodyEl.querySelectorAll('tr[data-uid]')].map(t => t.dataset.uid);
+  try {
+    await api('accounts/reorder', { method: 'POST', body: JSON.stringify({ uids: uids }) });
+    toast('顺序已保存（' + uids.length + ' 个账号）', 'ok');
+  } catch (e) { toast('保存顺序失败：' + e.message, 'err'); }
+  loadOverview(true);
+});
+
 $('btnCheckinAll').onclick = async () => {
   try { await api('checkin_all', { method: 'POST' }); toast('全部签到已开始，结果见日志', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
@@ -854,11 +1077,19 @@ function rateCell(m) {
 
 // 模型列表按域（cn / global）筛选：上游 id 形如 "cn:deepseek-v4-flash"。
 // 原始列表缓存在 mdList，切换筛选只重渲染，不再打一次上游。
-let mdList = [];
-let mdProbes = {};
-// mdStats 模型可用率（/panel/api/model_stats）：model id → ModelStat。
-// 与 mdProbes 一样属于可选增强，拉不到就是空表，整条显示「—」。
-let mdStats = {};
+// mdList / mdProbes / mdStats 的声明在文件顶部状态区（#qoder 视图会提前用到）。
+// mdRange 可用率统计口径（today / 30d）：只影响显示哪一对次数，数据两端都有。
+let mdRange = localStorage.getItem('wb-syan.mdrange') === '30d' ? '30d' : 'today';
+// sizeTag 把 token 数压成角标文案：1000K 读起来别扭，1M 才是人话。
+function sizeTag(n) {
+  const v = Number(n || 0);
+  if (!v) return '—';
+  if (v >= 1000000) {
+    const m = v / 1000000;
+    return (Math.abs(m - Math.round(m)) < 0.05 ? String(Math.round(m)) : m.toFixed(1)) + 'M';
+  }
+  return Math.round(v / 1000) + 'K';
+}
 function mdRealmOf(id) {
   const s = String(id || '');
   const i = s.indexOf(':');
@@ -880,13 +1111,17 @@ function mdStatOf(id) {
    「状态 99.0%」+ 一条 24 格的整点状态条。
    只显示桶里真有的观测——从没被调用过的模型整条「—」，不伪造 100%。
    状态格：绿=全成 / 黄=有失败 / 红=失败过半 / 灰=该小时没观测。 */
-function mdStatStrip(m) {
+function mdStatStrip(m, range) {
+  // 统计口径：today = 今日调用/成功；30d = 近 30 天调用/成功。
+  // 只渲染所选的那一对，另一半收进状态格 tooltip——四列常驻会白占 ~140px，
+  // 而这四列里有三列时间和窗口高度相关，用户看一个窗口时不需要另一个。
+  const r = range === '30d' ? '30d' : 'today';
   const cell = (k, v, cls) => '<span class="mds"><b class="mds-k">' + k + '</b>' +
     '<span class="mds-v' + (cls || '') + '">' + v + '</span></span>';
   const s = mdStatOf(m.id);
   if (!s) {
-    return '<div class="mdst">' + cell('今日调用', '—') + cell('今日成功', '—') +
-      cell('近 30 天调用', '—') + cell('近 30 天成功', '—') +
+    return '<div class="mdst">' + cell(r === '30d' ? '30 天调用' : '今日调用', '—') +
+      cell(r === '30d' ? '30 天成功' : '今日成功', '—') +
       '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>' +
       cell('延迟', '—') + cell('吞吐', '—') + cell('消耗', '—') + cell('明细', '—') + '</div>';
   }
@@ -897,19 +1132,22 @@ function mdStatStrip(m) {
   const bars = (s.slots || []).map(sl => {
     const t = String(sl.t || '').replace('T', ' ');
     if (!sl.req) return '<i class="mdsg void" title="' + esc(t + ':00 · 无观测') + '"></i>';
-    const r = (sl.req - sl.err) / sl.req;
-    const cls = r >= 0.999 ? 'ok' : (r >= 0.9 ? 'warn' : 'bad');
+    const rr = (sl.req - sl.err) / sl.req;
+    const cls = rr >= 0.999 ? 'ok' : (rr >= 0.9 ? 'warn' : 'bad');
     return '<i class="mdsg ' + cls + '" title="' + esc(t + ':00 · 成功 ' +
       (sl.req - sl.err) + '/' + sl.req) + '"></i>';
   }).join('');
+  const other = r === '30d'
+    ? '今日 ' + fmtInt(s.today_req || 0) + ' 次 / 成功 ' + fmtInt(ok)
+    : '近 30 天 ' + fmtInt(s.window_req || 0) + ' 次 / 成功 ' + fmtInt(wok);
   const status = bars
-    ? '<span class="mds mds-wide"><span class="mds-top"><b class="mds-k">状态</b>' +
+    ? '<span class="mds mds-wide" title="' + esc(other) + '"><span class="mds-top"><b class="mds-k">状态</b>' +
       '<span class="mds-v' + rateCls + '">' + (rate === null ? '—' : (rate * 100).toFixed(1) + '%') +
-      '</span></span><span class="mds-bar" title="最近 24 个整点，每格 1 小时">' + bars + '</span></span>'
+      '</span></span><span class="mds-bar" title="' + esc('最近 24 个整点，每格 1 小时 · ' + other) + '">' + bars + '</span></span>'
     : '<span class="mds mds-wide"><b class="mds-k">状态</b><span class="mds-v">—</span></span>';
   // 用量口径四态（与后端 ModelStat 的 credits / credit_samples / tokens_recorded /
-  // tokens_missing 一一对应）：有观测才显示实测值；没有观测是「未知」，
-  // 观测到 0 是「免费」（真实结论）；缺 token 明细是「未记录」——都不是 0。
+  // tokens_missing 一一对应）：有观测才显示实测值；没有观测是「未知」，观测到 0 是
+  // 「免费」（真实结论），缺 token 明细是「未记录」——都不是 0。
   const creditSamples = s.credit_samples || 0;
   const creditVal = Number(s.credits) || 0;
   const costTxt = creditSamples === 0
@@ -929,18 +1167,13 @@ function mdStatStrip(m) {
     ? '窗口内没有任何带 token 明细的请求（上游未返回 usage）——是未记录，不是 0 token'
     : ('有 token 明细的请求 ' + tokRec + ' 次' + (tokMiss > 0 ? '；另有 ' + tokMiss + ' 次未记录' : ''));
   return '<div class="mdst">' +
-    cell('今日调用', fmtInt(s.today_req || 0)) +
-    cell('今日成功', fmtInt(ok), ' ok') +
-    cell('近 30 天调用', fmtInt(s.window_req || 0)) +
-    cell('近 30 天成功', fmtInt(wok), ' ok') +
+    cell(r === '30d' ? '30 天调用' : '今日调用', fmtInt(r === '30d' ? (s.window_req || 0) : (s.today_req || 0))) +
+    cell(r === '30d' ? '30 天成功' : '今日成功', fmtInt(r === '30d' ? wok : ok), ' ok') +
     status +
     cell('延迟', fmtMs(s.avg_latency_ms)) +
-    cell('吞吐', s.avg_tokens_per_second
-      ? Number(s.avg_tokens_per_second).toFixed(1) + ' t/s' : '—') +
-    '<span class="mds" title="' + esc(costTitle) + '"><b class="mds-k">消耗</b>' +
-      '<span class="mds-v' + costCls + '">' + costTxt + '</span></span>' +
-    '<span class="mds" title="' + esc(tokTitle) + '"><b class="mds-k">明细</b>' +
-      '<span class="mds-v">' + tokTxt + '</span></span>' +
+    cell('吞吐', fmtRate(s.avg_tokens_per_second)) +
+    '<span class="mds" title="' + esc(costTitle) + '"><b class="mds-k">消耗</b><span class="mds-v' + costCls + '">' + costTxt + '</span></span>' +
+    '<span class="mds" title="' + esc(tokTitle) + '"><b class="mds-k">明细</b><span class="mds-v">' + tokTxt + '</span></span>' +
     '</div>';
 }
 
@@ -950,7 +1183,7 @@ function renderModels() {
   const realm = realmSel ? realmSel.value : 'all';
   const list = realm === 'all' ? mdList : mdList.filter(m => mdRealmOf(m.id) === realm);
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' +
+    tb.innerHTML = '<tr><td colspan="6"><div class="empty">' +
       (mdList.length ? '该域下没有模型' : '上游未返回模型') + '</div></td></tr>';
     return;
   }
@@ -968,7 +1201,18 @@ function renderModels() {
       if (m.supports_tool_call) caps.push('<span class="tag warn">工具</span>');
       if (m.supports_images) caps.push('<span class="tag warn">视觉</span>');
       if (m.supports_reasoning && !m.can_disable_thinking) caps.push('<span class="tag warn">思考常开</span>');
-      const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
+      // 上下文 / 最大输出：原本各占一列，仅两个数字却吃掉 ~140px 横向空间。
+      // 改成角标放进模型名下。和「工具 / 视觉」分两行：能力是定性、规格是定量，
+      // 混在一行会在窄列里折成「工具 视觉 上下文 1M / 输出 131K」这种断法。
+      const specs = [];
+      if (m.context_length) specs.push('<span class="tag mute" title="上下文长度">上下文 ' + sizeTag(m.context_length) + '</span>');
+      const pv = probeOf(m.id);
+      const outMax = (pv && (pv.measured || pv.claimed)) || m.max_output_tokens || 0;
+      if (outMax) specs.push('<span class="tag mute" title="实测最大输出">输出 ' + sizeTag(outMax) + '</span>');
+      // 能力/规格角标单独一层：沿用 .id 会被它的 nowrap + ellipsis 截成「工具 视觉 …」，
+      // 把新加的「上下文 1M / 输出 131K」直接吃掉。.caps 允许换行。
+      const capHtml = (caps.length ? '<div class="caps">' + caps.join(' ') + '</div>' : '') +
+        (specs.length ? '<div class="caps caps-spec">' + specs.join(' ') + '</div>' : '');
       const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
       return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm">' + esc(m.id) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
         '<td class="num">' + rateCell(m) + '</td>' +
@@ -976,9 +1220,7 @@ function renderModels() {
         '<td class="efs" style="white-space:normal">' + effs + '</td>' +
         // 可用率：7 项横排占一列，塞在「支持的思考档位」与「上下文长度」之间的
         // 空白里（此前那块空着，用户要求把这七项放这儿）。
-        '<td class="mdstat">' + mdStatStrip(m) + '</td>' +
-        '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
-        outCell(m, probeOf(m.id)) + '</tr>';
+        '<td class="mdstat">' + mdStatStrip(m, mdRange) + '</td></tr>';
     }).join('');
   const hit = list.filter(m => probeOf(m.id)).length;
   const scope = realm === 'all' ? '' : '（' + realm + '）';
@@ -987,7 +1229,7 @@ function renderModels() {
 }
 async function loadModels() {
   const tb = $('mdBody');
-  tb.innerHTML = '<tr><td colspan="8"><div class="empty">正在向上游查询…</div></td></tr>';
+  tb.innerHTML = '<tr><td colspan="6"><div class="empty">正在向上游查询…</div></td></tr>';
   try {
     // 探测数据是可选增强：拉取失败不影响模型列表本身
     // 探测 / 可用率都是可选增强：拉取失败不影响模型列表本身
@@ -1000,14 +1242,22 @@ async function loadModels() {
     mdProbes = pr.probes || {};
     mdStats = {};
     (ms.stats || []).forEach(x => { if (x && x.model) mdStats[x.model] = x; });
-    if (!mdList.length) { tb.innerHTML = '<tr><td colspan="8"><div class="empty">上游未返回模型</div></td></tr>'; return; }
+    if (!mdList.length) { tb.innerHTML = '<tr><td colspan="6"><div class="empty">上游未返回模型</div></td></tr>'; return; }
     renderModels();
   } catch (e) {
-    tb.innerHTML = '<tr><td colspan="8"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="6"><div class="empty">' + esc(e.message) + '</div></td></tr>';
   }
 }
 $('btnModels').onclick = loadModels;
 if ($('mdRealm')) $('mdRealm').onchange = renderModels;
+if ($('mdRange')) {
+  $('mdRange').value = mdRange;
+  $('mdRange').onchange = () => {
+    mdRange = $('mdRange').value === '30d' ? '30d' : 'today';
+    localStorage.setItem('wb-syan.mdrange', mdRange);
+    renderModels();
+  };
+}
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
 let logCh = 'all';
@@ -1998,19 +2248,19 @@ function usRow(name, sub, a, mid, withPerf, credit) {
 
 function renderUsage(d) {
   const t = d.totals || {};
-  // 积分两个口径都算出来，主数字用**累计口径**：
-  //   - 累计口径 = Σ(账号套餐总额度 − 剩余)。它覆盖全部历史，是能对得上的真值。
-  //   - 窗口口径 = 逐请求累加上游 usage.credit。只覆盖「逐请求记账上线之后」的
-  //     请求，而且免费请求记 0（占比很大），单独当主数字会被读成「几乎没消耗」。
-  // 两个数都写进 tooltip，不藏数据。
+  // 积分：主数字改用**本窗口**逐请求实测（上游 usage.credit 累加），与请求数 /
+  // token / 延迟同一口径——切到「近 3 天」就只算这 3 天，切到「近 24 小时」就只算
+  // 24 小时。账号池累计口径（Σ 总额度 − 剩余）保留在 tooltip 里做对照：它覆盖
+  // 全部历史、不随窗口变化，当主数字会与旁边的窗口数字互相矛盾（用户点开就发现）。
   const poolCredit = Number(d.credit_used_pool_total || 0);
-  const winCredit = t.credits_n
-    ? fmtInt(t.credits) + '（' + fmtInt(t.credits_n) + ' 次请求有成本观测）'
-    : '无样本';
-  const creditTip = '累计口径：Σ(账号套餐总额度 − 剩余)，覆盖全部历史，不随窗口变化' +
-    (poolCredit ? ' = ' + fmtInt(poolCredit) : '') +
-    '\n本窗口逐请求实测：' + winCredit +
-    (t.credits_n ? '' : '（逐请求积分记账自 v1.13.0 上线，更早的分桶没有该字段）');
+  const winCreditVal = t.credits_n ? Number(t.credits || 0) : 0;
+  const creditTip =
+    '本窗口逐请求实测：' + (t.credits_n
+      ? fmtInt(winCreditVal) + ' 积分（' + fmtInt(t.credits_n) + ' 次请求带成本观测）'
+      : '无样本（该窗口内没有任何请求返回 usage.credit）') +
+    '\n账号池累计口径：' + (poolCredit ? fmtInt(poolCredit) + '（Σ 总额度 − 剩余，覆盖全部历史，不随窗口变化）' : '额度未知') +
+    (t.credits_n ? '' : '\n逐请求积分记账自 v1.13.0 上线，更早的分桶没有该字段');
+  const creditMain = t.credits_n ? fmtInt(winCreditVal) : (poolCredit ? '—' : '—');
   $('usStats').innerHTML =
     usStat(fmtTok(t.requests), '请求数') +
     usStat(fmtTok(t.total_tokens), '总 token') +
@@ -2018,11 +2268,9 @@ function renderUsage(d) {
     usStat(fmtTok(t.completion_tokens), 'completion') +
     usStat(t.errors ? String(t.errors) : '0', '失败尝试', t.errors ? 'warn' : '') +
     usStat(fmtMs(t.avg_latency_ms), '平均延迟') +
-    // 积分已用：主数字 = 账号池累计口径（总额度 − 剩余）。窗口实测口径在 tooltip
-    // 里逐条列出——它只覆盖记账上线后的请求，当主数字会把「刚上线」读成「没消耗」。
-    // 累计口径也拿不到（额度未知）时才退回窗口实测，两者都没有才显示「—」。
-    usStat(poolCredit ? fmtInt(poolCredit) : (t.credits_n ? fmtInt(t.credits) : '—'),
-           '积分已用（累计）', '', creditTip);
+    // 标签只用四个字：卡片宽度装不下「积分已用（本窗口）」，会折成两行
+    // （截图里「积分已用（本窗 / 口）」很难看）。窗口口径写在 tooltip 与页头窗口选择器上。
+    usStat(creditMain, '积分已用', '', creditTip);
 
   // 卡片、三张表与时序图全部按所选窗口统计（切窗口数字随之变化）；
   // 「全部历史」含 90 天前折叠出的日桶。这里标注当前口径与数据起点。
@@ -2034,16 +2282,15 @@ function renderUsage(d) {
     (d.since ? ' · 数据自 ' + d.since.replace('T', ' ') : '') +
     (d.file_bytes ? ' · 文件 ' + (d.file_bytes / 1024).toFixed(1) + ' KB' : '');
 
-  // 「按账号」的「积分已用」列同样走**累计口径**（credit_used_by_account），与
-  // 上方胶囊一致；该账号额度未知（旧 state / 余额查询失败）时退回窗口实测，
-  // 两者都没有才显示「—」。窗口实测值放 title，点开就能对比。
+  // 「按账号」的「积分已用」列同样走**本窗口**口径，与上方胶囊一致：切窗口时
+  // 每行数字跟着变。账号池累计口径放 title 做对照（不随窗口变化的那个数）。
   const poolByAcct = d.credit_used_by_account || {};
   $('usAccBody').innerHTML = (d.by_account || []).map(x => {
     const pool = Number(poolByAcct[x.key] || 0);
     const win = x.credits_n ? fmtInt(x.credits) : '—';
-    const tip = '累计口径（总额度 − 剩余）：' + (pool ? fmtInt(pool) : '额度未知') +
-      '\n本窗口逐请求实测：' + win;
-    const cell = pool ? fmtInt(pool) : win;
+    const tip = '本窗口逐请求实测：' + win +
+      '\n账号池累计口径（总额度 − 剩余，不随窗口变化）：' + (pool ? fmtInt(pool) : '额度未知');
+    const cell = win;
     return usRow(x.key.slice(0, 8), x.extra || '', x,
       '<td class="num">' + esc(x.realm || '') + '</td>', true,
       '<span title="' + esc(tip) + '">' + cell + '</span>');
@@ -3135,14 +3382,88 @@ function grFillAccounts() {
   if (cur && list.some(a => a.uid === cur)) sel.value = cur;
   else if (list.length) sel.value = list[0].uid;
 }
+// grKeyZh 成长中心字段中文名。上游返回的是英文键（makeup_cards / streak ...），
+// 直接展示等于把 JSON 丢给用户看；这里做一张显式词典，没收录的键原样保留——
+// 宁可露出一个英文键，也不要因为猜错含义把数据说成别的。
+const grKeyZh = {
+  makeup_cards: '补签卡', redemption_status: '兑换状态', streak: '连续签到',
+  timezone: '时区', date: '日期', is_active: '今日已活跃', score: '活跃度',
+  status_text: '状态说明', base_static_url: '静态资源地址', instance_id: '实例 ID',
+  name: '名称', personality: '性格', rarity: '稀有度', thumbnail_url: '缩略图',
+  arrive_at: '到达时间', depart_at: '出发时间', location: '所在地',
+  reward_credit: '奖励积分', server_now: '服务器时间', state: '状态',
+  daily_limit_reached: '今日次数已满', advanced_count: '高级兑换',
+  legendary_count: '传说兑换', month_total_days: '本月天数',
+  remaining_days: '剩余天数', starter_count: '初始兑换', completed: '已完成',
+  level: '等级', level_name: '等级名称', max_level: '已满级', total: '总数',
+  balance: '余额', total_consumed: '累计消耗', total_earned: '累计获得',
+  affordable: '可开启', cost_per_open: '单次消耗', max_open_count: '最多开启',
+  chances: '次数', module: '模块', current_buddy: '当前宠物', buddies: '宠物',
+  cells: '活跃格子', today: '今日', uid: '账号', nickname: '昵称', exp: '经验',
+  rank: '排名', pets: '宠物列表', items: '条目', claimed: '已领取',
+  claimable: '可领取', reward: '奖励', credits: '积分', days: '天数',
+  current: '当前', max: '上限', used: '已用', remain: '剩余', count: '数量',
+  // 嵌套对象里的二级键：补签卡 / 兑换状态 / 抽奖模块 / 旅行所在地
+  month: '月份', available: '可领取', claimed: '已领取', free: '免费', paid: '付费',
+  city: '城市', area: '区域', detail: '详情', available_from: '可领取自',
+  buddy: '宠物', last_visit: '最近到访', continuous_days: '连续天数',
+};
+
+// grValZh 值级词典：少数状态字段的值本身是英文枚举（state=arrived），
+// 只翻键不翻值仍然会露出英文。只收确定含义的词，未收录原样显示。
+const grValZh = {
+  arrived: '已到达', traveling: '旅行中', traveling_out: '已出发', idle: '空闲',
+  claimed: '已领取', claimable: '可领取', expired: '已过期', active: '进行中',
+};
+
+// grKey 取字段中文名；未收录原样返回。
+function grKey(k) { return grKeyZh[k] || k; }
+
+// grTimeish 把 Unix 秒级时间戳按本地时间显示：上游这些字段都是秒，直接印 1792213201
+// 等于让用户自己换算。只对「名字像时间」或「数字大到不可能是普通计数」的字段生效。
+function grTimeish(k, v) {
+  const n = Number(v);
+  if (!n || n < 1000000000 || n > 4102444800) return null;
+  if (!/(_at|_time|^server_now$|^date$)/.test(k)) return null;
+  const d = new Date(n * 1000);
+  const p = x => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+    ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// grVal 把任意值渲染成一行可读文本：
+//   - 数组 → 「、」连接
+//   - 对象 → 递归展开成「子键 子值 · …」，最多两层，再深就 JSON
+//   - 布尔 → 是 / 否（避免 true/false 直接露面）
+//   - 时间戳 → 本地时间
+function grVal(k, v, depth) {
+  depth = depth || 0;
+  if (v === null || v === undefined || v === '') return '—';
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  const t = grTimeish(k, v);
+  if (t) return t;
+  if (Array.isArray(v)) return v.length ? v.map(x => grVal(k, x, depth + 1)).join('、') : '—';
+  if (typeof v === 'object') {
+    const ks = Object.keys(v);
+    if (!ks.length) return '—';
+    if (depth >= 2) return JSON.stringify(v);
+    return ks.map(x => grKey(x) + ' ' + grVal(x, v[x], depth + 1)).join(' · ');
+  }
+  const sv = typeof v === 'string' ? grValZh[v] : '';
+  if (sv) return sv;
+  return String(v);
+}
 function grKV(obj) {
   if (!obj || typeof obj !== 'object') return '';
   const keys = Object.keys(obj);
   if (!keys.length) return '<span class="grnone">—</span>';
   return keys.map(k => {
-    const v = obj[k];
-    const text = Array.isArray(v) ? v.join('、') : (v === null || v === undefined || v === '' ? '—' : String(v));
-    return '<span class="grkv"><b>' + esc(k) + '</b>' + esc(text) + '</span>';
+    const text = grVal(k, obj[k]);
+    const raw = esc(text);
+    // 长 URL / 长串：视觉上折行，完整值留 title，避免把卡片撑出格子
+    const long = text.length > 60;
+    return '<span class="grkv' + (long ? ' grlong' : '') + '"' + (long ? ' title="' + raw + '"' : '') + '>' +
+      '<b>' + esc(grKey(k)) + '</b>' + raw + '</span>';
   }).join('');
 }
 function grHeatmap(d) {
@@ -3188,7 +3509,14 @@ function renderGrowth(snap, cached) {
 }
 async function loadGrowth(force) {
   const sel = $('grUID');
-  if (!sel.options.length) grFillAccounts();
+  // 直接用 #growth 打开时，go() 在 loadOverview() 返回之前就跑，账号下拉会是空的
+  // （页面显示"先添加账号"，其实池里有号）。这里补一次 overview 再填。
+  if (!sel.options.length) {
+    if (!overviewData) {
+      try { overviewData = await api('overview'); } catch (e) { /* 下面统一给空态 */ }
+    }
+    grFillAccounts();
+  }
   const uid = sel.value;
   if (!uid) { $('grBody').innerHTML = '<div class="grnone">先添加账号</div>'; return; }
   $('grBody').innerHTML = '<div class="grnone">加载中…</div>';
@@ -3330,24 +3658,109 @@ async function loadRoutes() {
   } catch (e) { /* 只读卡片失败静默 */ }
 }
 
-/* ── Qoder 签到 ─────────────────────────────────────────────────── */
+/* ── Qoder（独立一栏：上游配置 + 签到 + 可用模型）─────────────────
+   为什么单独一栏：Qoder 是第二条上游，凭证、token 缓存、签到时点、
+   模型清单全都跟 WorkBuddy 账号池无关。混在「模型与档位」的路由卡里，
+   看的人要先在 WorkBuddy 的拓扑下面找到它，语义上也不属于同一层。 */
+function qdMask(tok) {
+  const s = String(tok || '');
+  if (!s) return '未配置';
+  if (s.length <= 12) return '已配置（…' + s.slice(-3) + '）';
+  return '已配置（' + s.slice(0, 4) + '…' + s.slice(-4) + '）';
+}
+function qdRows(rows) {
+  return rows.map(r => '<div class="row"><span class="lb">' + esc(r[0]) + '</span>' +
+    '<span class="v">' + r[1] + '</span></div>').join('');
+}
+function renderQoderConfig(cfg) {
+  const q = (cfg && cfg.qoder) || {};
+  const accts = Array.isArray(q.accounts) ? q.accounts : [];
+  const token = q.personal_access_token || '';
+  const enabled = !!token || accts.length > 0;
+  const hours = (((cfg || {}).models || {}).upstream_hours || {}).qoder;
+  const hourText = Array.isArray(hours) && hours.length ? hours.join('，') : '全天可用';
+  $('qdKpi').innerHTML =
+    '<div class="k ' + (enabled ? 'ok' : 'bad') + '"><div class="v">' + (enabled ? '已启用' : '未启用') +
+      '</div><div class="lb">上游状态</div></div>' +
+    '<div class="k"><div class="v">' + (accts.length || (token ? 1 : 0)) +
+      '</div><div class="lb">凭证账号数</div></div>' +
+    '<div class="k"><div class="v">' + esc(hourText) + '</div><div class="lb">可用时段</div></div>';
+  $('qdCfgBody').innerHTML = qdRows([
+    ['调用前缀', '<code>qoder:</code> 例 <code>qoder:auto</code>'],
+    ['凭证', esc(qdMask(token))],
+    ['多账号', accts.length
+      ? accts.map((a, i) => esc(a.name || ('账号 ' + (i + 1))) + ' · ' + esc(qdMask(a.personal_access_token))).join('<br>')
+      : '未配置（走单账号 token）'],
+    ['token 缓存', '<code>' + esc(q.token_file || './data/qoder_token.json') + '</code>'],
+    ['签到时点', '复用 schedule.checkin_hours'],
+  ]);
+  $('qdNote').textContent = enabled ? '只读 · 改 config.json 后刷新' : '未配置 Qoder（config.json 的 qoder 段为空）';
+}
 function renderQoder(d) {
-  const box = $('qoderBox');
-  if (!box) return;
-  if (!d || !d.enabled) { box.hidden = true; return; }
-  box.hidden = false;
-  $('qkCurrent').textContent = (d.current || 0) + ' 天';
-  $('qkTotal').textContent = (d.total || 0) + ' 天';
-  $('qkState').textContent = (d.current || 0) > 0 ? '已连续' : '未开始';
-  const list = d.recent || [];
-  $('qkDots').innerHTML = list.length ? list.map(x => {
-    const on = (x.count || 0) > 0;
-    return '<span title="' + esc(x.date) + '" style="display:inline-block;width:8px;height:8px;' +
-      'margin:1px;border-radius:2px;background:' + (on ? 'var(--ok,#2ecc71)' : 'var(--line,#e5e5e5)') + '"></span>';
-  }).join('') : '—';
+  const enabled = !!(d && d.enabled);
+  $('qkKpi').innerHTML =
+    '<div class="k ' + (enabled ? 'ok' : '') + '"><div class="v">' +
+      (enabled ? ((d.current || 0) > 0 ? '已连续' : '未开始') : '未启用') +
+      '</div><div class="lb">签到状态</div></div>' +
+    '<div class="k"><div class="v">' + (enabled ? (d.current || 0) + ' 天' : '—') +
+      '</div><div class="lb">连续天数</div></div>' +
+    '<div class="k"><div class="v">' + (enabled ? (d.total || 0) + ' 天' : '—') +
+      '</div><div class="lb">累计天数</div></div>';
+  const list = (d && d.recent) || [];
+  $('qkDots').innerHTML = list.length
+    ? list.map(x => '<i class="' + ((x.count || 0) > 0 ? 'on' : '') + '" title="' +
+        esc((x.date || '') + (x.count ? ' · 领 ' + x.count + ' 次' : ' · 未领取')) + '"></i>').join('') +
+      '<span class="lb">最近 ' + list.length + ' 天</span>'
+    : '<span class="lb">还没有签到记录</span>';
 }
 async function loadQoder() {
   try { renderQoder(await api('qoder/checkin')); } catch (e) { /* 未配置时静默 */ }
+}
+async function loadQoderModels() {
+  const tb = $('qdModelBody');
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="5"><div class="empty">正在查询…</div></td></tr>';
+  try {
+    if (!mdList.length) {
+      const d = await api('models');
+      mdList = d.models || [];
+    }
+    const list = mdList.filter(m => String(m.id || '').indexOf('qoder:') === 0);
+    $('qdModelNote').textContent = list.length ? list.length + ' 个模型 · 前缀 qoder:' : '上游未返回 Qoder 模型';
+    if (!list.length) {
+      tb.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="big">没有 Qoder 模型</div>' +
+        'config.json 的 qoder 段未配置凭证，或上游目录里没有带 qoder: 前缀的模型</div></td></tr>';
+      return;
+    }
+    const keys = Object.keys(mdProbes || {});
+    tb.innerHTML = list.map(m => {
+      const pk = keys.filter(k => k === m.id || k.endsWith(':' + m.id))[0];
+      const pv = pk ? mdProbes[pk] : null;
+      const outMax = (pv && (pv.measured || pv.claimed)) || m.max_output_tokens || 0;
+      const eff = (m.supported_efforts || []).slice();
+      if (m.can_disable_thinking && eff.length && eff.indexOf('off') < 0) eff.push('off（可关）');
+      const effHtml = eff.length
+        ? eff.map(e => '<span class="tag warn">' + esc(e) + '</span>').join(' ')
+        : '<span style="color:var(--ink-3)">' + (m.supports_reasoning ? '固定档 · 默认 ' + esc(m.default_effort || '?') : '不支持思考') + '</span>';
+      return '<tr><td class="who"><div class="nm">' + esc(m.id) + '</div></td>' +
+        '<td>' + esc(m.name || '') + '</td>' +
+        '<td class="num">' + sizeTag(m.context_length) + '</td>' +
+        '<td class="num">' + sizeTag(outMax) + '</td>' +
+        '<td class="efs" style="white-space:normal">' + effHtml + '</td></tr>';
+    }).join('');
+  } catch (e) {
+    tb.innerHTML = '<tr><td colspan="5"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+  }
+}
+async function loadQoderPage() {
+  loadQoder();
+  loadQoderModels();
+  try {
+    const d = await api('config');
+    renderQoderConfig(d.config);
+  } catch (e) {
+    $('qdCfgBody').innerHTML = '<div class="grerr">读取配置失败：' + esc(e.message) + '</div>';
+  }
 }
 $('btnQoderCheckin').onclick = async () => {
   const b = $('btnQoderCheckin');
@@ -3367,6 +3780,8 @@ $('btnQoderCheckin').onclick = async () => {
   } catch (e) { note.textContent = e.message; }
   finally { b.disabled = false; }
 };
+if ($('btnQoderReload')) $('btnQoderReload').onclick = loadQoderPage;
+if ($('btnQoderModels')) $('btnQoderModels').onclick = loadQoderModels;
 
 /* ── 配置备份 ───────────────────────────────────────────────────── */
 function renderBackups(d) {

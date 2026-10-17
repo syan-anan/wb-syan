@@ -643,14 +643,17 @@ input[type=checkbox]:disabled { opacity: .45; cursor: not-allowed; }
    顶栏不固定（滚动即走，绝不压住内容）；底栏固定但换成不透明玻璃 + 顶部投影，
    滚动时压在内容上也看得清是"操作条"，不会出现半透明穿帮。 */
 .topbar { position: static; background: transparent; border-bottom: none; z-index: auto; }
+/* 保存栏不再贴底：sticky + 高 z-index 会让它浮在后面的「配置备份」卡片上方
+   （滚动时按钮压着别人，用户反馈重叠）。改成跟随表单滚走的普通操作条，
+   仍保留玻璃底与圆角，视觉上和卡片同层。 */
 .savebar {
-  position: sticky; bottom: 0; z-index: 6;
-  background: var(--glass-strong);
-  backdrop-filter: blur(26px) saturate(160%);
-  -webkit-backdrop-filter: blur(26px) saturate(160%);
-  border-top: 1px solid var(--bd);
-  border-radius: 24px 24px 0 0;
-  box-shadow: 0 -14px 34px rgba(0,0,0,.34);
+  position: static;
+  background: var(--glass-soft);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid var(--bd);
+  border-radius: 14px;
+  box-shadow: none;
 }
 [data-theme="light"] .savebar { box-shadow: 0 -14px 34px rgba(90,70,150,.13); }
 
@@ -838,6 +841,101 @@ select:disabled { opacity: .5; }
    注意：这里用 max-width 覆盖上面的 min-width 声明，靠**书写顺序靠后**取胜，
    所以本块必须放在文件末尾。
    ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── 侧边栏：拖动排序 + 显隐设置 ────────────────────────────────────
+   手柄只在悬停当前项时出现（侧栏宽度只有 202px，常驻会挤掉文字）。
+   拖动时整行半透明，落点用一条 2px 强调线标出，避免"拖到哪了"靠猜。 */
+.nav ul li { position: relative; }
+.nav a { padding-right: 34px; }   /* 给右侧拖动柄留位，避免压住最长标签 */
+.nav-grip {
+  /* 放在条目右侧，不压图标与文字：左侧是 17px 图标 + 12px 间距，
+     塞进去必然重叠（截图里会变成「⠿人」）。右侧留出 34px 内边距给它。 */
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 26px; display: grid; place-items: center;
+  color: var(--sub); font-size: 12px; letter-spacing: -1px;
+  opacity: 0; cursor: grab; user-select: none; touch-action: none;
+  border-radius: 6px; transition: opacity .16s ease, background .16s ease;
+  z-index: 2;
+}
+.nav ul li:hover > .nav-grip { opacity: .75; }
+.nav-grip:hover { opacity: 1 !important; background: rgba(255,255,255,.14); }
+.nav-grip:active { cursor: grabbing; }
+.nav ul li.nav-dragging { opacity: .45; }
+.nav ul li.drop-before::before,
+.nav ul li.drop-after::after {
+  content: ""; position: absolute; left: 6px; right: 6px; height: 2px;
+  background: var(--accent); border-radius: 2px; box-shadow: 0 0 8px var(--accent);
+}
+.nav ul li.drop-before::before { top: -4px; }
+.nav ul li.drop-after::after { bottom: -4px; }
+/* 被隐藏的栏目：只在设置浮层里出现，侧栏不留占位 */
+.nav ul li.nav-hidden { display: none; }
+
+.navset {
+  position: fixed; z-index: 70; width: 246px;
+  background: var(--surface); border: 1px solid var(--bd);
+  border-radius: 14px; box-shadow: 0 22px 60px -20px rgba(0,0,0,.62);
+  padding: 12px 12px 10px; backdrop-filter: var(--blur);
+}
+.navset-hd { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+.navset-x { border: none; background: transparent; color: var(--sub); font-size: 17px; line-height: 1; cursor: pointer; padding: 2px 4px; border-radius: 6px; }
+.navset-x:hover { background: var(--line-soft); color: var(--ink); }
+.navset-tip { font-size: 11.5px; color: var(--sub); margin-bottom: 9px; line-height: 1.5; }
+.navset-tip b { color: var(--ink-2); }
+.navset-list { display: grid; gap: 1px; max-height: 46vh; overflow: auto; }
+.navset-list label { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 8px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.navset-list label:hover { background: var(--line-soft); }
+.navset-list input { accent-color: var(--accent); }
+.navset-ft { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft); white-space: nowrap; }
+.navset-ft .xs { flex: none; }
+.navset-btn { margin-left: 6px; }
+
+/* ── 账号池：拖动排序手柄 ──────────────────────────────────────────
+   取代原来的 ↑↓ 两个按钮：点一次只挪一格，账号一多就要连点十几次；
+   拖动是"一次落定整张表"，后端 accounts/reorder 一次写完。 */
+.ord-drag {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 22px; border-radius: 6px; border: 1px solid transparent;
+  color: var(--ink-3); cursor: grab; user-select: none; touch-action: none;
+  font-size: 13px; letter-spacing: -1px; line-height: 1;
+}
+.ord-drag:hover { color: var(--ink); background: var(--line-soft); border-color: var(--line-soft); }
+.ord-drag:active { cursor: grabbing; }
+/* 行拖动中：整行淡出，落点线由 JS 插入的类控制 */
+.acc tbody tr.dragging { opacity: .42; }
+.acc tbody tr.drop-before > td { box-shadow: inset 0 2px 0 var(--accent); }
+.acc tbody tr.drop-after > td { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* 模型名下的一行角标（工具 / 视觉 / 上下文 / 输出）：
+   .who .id 是 nowrap + ellipsis，直接复用会把超出部分截成「…」，所以单开一层
+   允许换行；行高按 18px 收，密集列表也不会被撑开。 */
+.who .caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.who .caps .tag { line-height: 1.5; }
+/* 规格角标（上下文 / 输出）另起一行：能力定性与规格定量分开，窄列里不会折成
+   「工具 视觉 上下文 1M / 输出 131K」这种半截换行；字号再收半档，读起来是注解。 */
+.who .caps-spec { margin-top: 2px; }
+.who .caps-spec .tag { font-size: 10.5px; opacity: .92; }
+
+/* ── Qoder 上游页 ─────────────────────────────────────────────────── */
+.qd-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.qd-kpi .k {
+  border: 1px solid var(--line-soft); border-radius: 12px; padding: 10px 13px;
+  background: var(--surface-2, rgba(255,255,255,.04));
+}
+.qd-kpi .k .v { font-size: 19px; font-weight: 700; color: var(--ink); line-height: 1.25; }
+.qd-kpi .k .lb { font-size: 11.5px; color: var(--sub); margin-top: 2px; }
+.qd-kpi .k.ok .v { color: var(--ok); }
+.qd-kpi .k.bad .v { color: var(--bad); }
+.qd-cfg { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 18px; }
+.qd-cfg .row { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px dashed var(--line-soft); min-width: 0; }
+.qd-cfg .row .lb { flex: 0 0 108px; color: var(--sub); font-size: 12px; }
+.qd-cfg .row .v { flex: 1; min-width: 0; color: var(--ink-2); font-size: 12.5px; overflow-wrap: anywhere; }
+.qd-cfg .row .v code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+.qd-dots { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; margin-top: 4px; }
+.qd-dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--line-soft); }
+.qd-dots i.on { background: var(--ok); }
+.qd-dots .lb { font-size: 11.5px; color: var(--sub); margin-left: 6px; }
+
 @media (max-width: 640px) {
   /* 1) 解除强制最小宽度 */
   .acc, .acc.md { min-width: 0; }
@@ -848,10 +946,10 @@ select:disabled { opacity: .5; }
 
   /* 3) 模型与档位：让出「支持的思考档位 / 上下文长度 / 最大输出」三列。
         可用率列（.mdstat）是这页的核心，保留。 */
+  /* 列数已从 8 收到 6（上下文/最大输出改成模型名下的角标），这里只需让出
+     「支持的思考档位」；可用率列是这页核心，保留。 */
   .acc.md .efs,
-  .acc.md .efs-h,
-  .acc.md th:nth-child(7), .acc.md td:nth-child(7),
-  .acc.md th:nth-child(8), .acc.md td:nth-child(8) { display: none; }
+  .acc.md .efs-h { display: none; }
 
   /* 4) 收紧留白与字号 */
   .acc th, .acc td { padding: 9px 7px; }
@@ -869,7 +967,9 @@ select:disabled { opacity: .5; }
 .grbody { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; padding: 10px 14px 14px; }
 .grsec { border: 1px solid var(--line-soft); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .grsec h4 { margin: 0 0 8px; font-size: 12.5px; color: var(--ink-2); font-weight: 550; }
-.grkv { display: inline-block; margin: 0 12px 6px 0; font-size: 12px; color: var(--ink); }
+.grkv { display: inline-block; margin: 0 12px 6px 0; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; max-width: 100%; }
+/* 长 URL 独占一行：inline-block 里长串仍会把卡片撑宽，块级后按卡片宽度折行 */
+.grkv.grlong { display: block; }
 .grkv b { color: var(--ink-3); font-weight: 500; margin-right: 5px; }
 .grnone { color: var(--ink-3); font-size: 12px; }
 .grerr { color: var(--bad, #e06c75); font-size: 12px; }

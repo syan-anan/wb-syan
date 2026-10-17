@@ -71,3 +71,27 @@ func manualPriorityLocked(cands []*entry) (maxP int, on bool) {
 	}
 	return maxP, on
 }
+
+// SetOrder 按给定 uid 顺序重排手动优先级：第 1 个拿 N、第 2 个 N-1……最后 1 个。
+// 用于面板整表拖动排序（一次落定 N 个账号，比连点 ↑↓ 稳定，也不会把数字推到钳位）。
+//
+// 口径与 AdjustPriority 一致：只改 priority，不改资格；返回各 uid 的新优先级。
+// 未知 uid 跳过（返回里不出现），调用方据此提示「部分账号已不存在」。
+func (p *Pool) SetOrder(uids []string) map[string]int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]int, len(uids))
+	n := len(uids)
+	for i, uid := range uids {
+		e, ok := p.byUID[uid]
+		if !ok {
+			continue
+		}
+		e.priority = n - i
+		out[uid] = e.priority
+	}
+	if len(out) > 0 {
+		p.dirty.Store(true)
+	}
+	return out
+}

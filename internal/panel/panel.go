@@ -243,6 +243,7 @@ func (p *Panel) routes() {
 	// 手动排序：上移 / 下移 / 恢复自动。手动档优先于全部自动选号策略，
 	// 语义与边界见 internal/pool/priority.go。
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/order", p.withAuth(p.accountOrder))
+	p.mux.HandleFunc("POST /panel/api/accounts/reorder", p.withAuth(p.accountsReorder))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withAuth(p.accountTaskAccept))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withAuth(p.taskAcceptAll))
@@ -586,6 +587,38 @@ func (p *Panel) accountOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("panel: order uid=%s dir=%s priority=%d", uid, dir, pr)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "priority": pr})
+}
+
+// accountsReorder 整表拖动排序：客户端把新的从上到下 uid 序列整体提交，
+// 服务端一次写定全部 priority（N..1）。相比连点 up/down：
+//   - 一次请求落定，不会中途被别的刷新插入半截状态；
+//   - 不会把 priority 推到 99 钳位（长列表连点必然撞顶）；
+//   - 与列表顺序一一对应，拖到哪就是哪。
+//
+// 只改手动档，资格过滤（禁用/冷却/在途/独占/白名单）照常，语义见 pool.SetOrder。
+func (p *Panel) accountsReorder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UIDs []string `json:"uids"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if len(req.UIDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "uids is empty")
+		return
+	}
+	if len(req.UIDs) > 500 {
+		writeErr(w, http.StatusBadRequest, "too many uids (max 500)")
+		return
+	}
+	applied := p.cfg.Pool.SetOrder(req.UIDs)
+	if len(applied) == 0 {
+		writeErr(w, http.StatusNotFound, "no such account")
+		return
+	}
+	log.Printf("panel: reorder %d/%d accounts", len(applied), len(req.UIDs))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "applied": len(applied), "priority": applied})
 }
 
 // accountCheckin 单号签到：DailyCheckin + 余额查询解冻（已签到等业务错误不阻塞余额刷新），

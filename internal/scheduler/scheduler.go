@@ -154,7 +154,7 @@ func (s *Scheduler) withAccount(ctx context.Context, uid, label string, thaw boo
 	if !ok {
 		// 跳过是常态（对话正在用这个号 / 号已禁用），一行够用——按原因分类的累计
 		// 计数在 GateStats 里，运维要看比例去那里看。
-		log.Printf("gate %s: 跳过（%s）", label, reason)
+		log.Printf("gate %s: 跳过（%s）", label, gateReasonZh(reason))
 		return
 	}
 	defer release()
@@ -674,4 +674,32 @@ func (s *Scheduler) SetBalanceInterval(d time.Duration) {
 	}
 	s.balanceInterval.Store(int64(d))
 	poke(s.rearmBalance)
+}
+
+// gateReasonZh 把闸门内部原因翻成面板可读的中文。
+//
+// 为什么不在 lease.go 里直接写中文：闸门本身要能被非中文调用方复用（测试、脚本），
+// 机器码（in_flight / disabled / cooling / waf）是稳定契约；翻译放在日志边界这一层，
+// 只影响给人看的这一行，不动判定语义。
+//
+// 未知原因原样透出——宁可显示一个没翻译的值，也不要把新原因悄悄替换成「跳过」。
+func gateReasonZh(reason string) string {
+	switch reason {
+	case "in_flight":
+		return "请求在途"
+	case "disabled":
+		return "账号已禁用"
+	case "cooling":
+		return "冷却中"
+	case "peer":
+		return "已有后台任务在跑"
+	case "canceled":
+		return "等待被取消"
+	case "invalid_uid":
+		return "账号 ID 无效"
+	case "waf":
+		return "出口保护期"
+	default:
+		return reason
+	}
 }
