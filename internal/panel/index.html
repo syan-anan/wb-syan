@@ -280,7 +280,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 健康色条用真实单元格（td.mark）实现，而不是 tr::before 伪元素：
    伪元素在表格行内会被浏览器当作匿名单元格插入行首，整行内容右移一列、
    与表头错位——窗口越宽列越宽越明显。 */
-.acc .mark { width: 20px; min-width: 20px; padding: 0; position: relative; cursor: grab; }
+.acc .mark { width: 3px; min-width: 3px; padding: 0; }   /* 账号池那一列在主题层加宽到 20px（见 #view-accounts .acc .mark） */
 .acc .mark i { display: block; width: 3px; height: 100%; min-height: 22px; background: var(--ok); }
 .acc tbody tr.cool .mark i { background: var(--warn); }
 .acc tbody tr.off .mark i { background: var(--bad); }

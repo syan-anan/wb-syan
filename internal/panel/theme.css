@@ -451,17 +451,17 @@ input[type=checkbox]:disabled { opacity: .45; cursor: not-allowed; }
 /* 色条列同时是排序把手：整格 draggable，色条绝对定位占满高度（top/bottom 内缩
    6px），⠿ 手柄与 ⟲ 按钮走正常文档流、垂直居中排在色条右侧。
    ⟲ 只在手动优先级非 0 时渲染，且带二次确认，不会和拖拽抢手势（按钮自己 draggable=false）。 */
-.acc .mark { cursor: grab; }
-.acc .mark:active { cursor: grabbing; }
-.acc .mark i { position: absolute; left: 4px; top: 6px; bottom: 6px; width: 3px; height: auto;
+#view-accounts .acc .mark { width: 20px; min-width: 20px; position: relative; cursor: grab; }
+#view-accounts .acc .mark:active { cursor: grabbing; }
+#view-accounts .acc .mark i { position: absolute; left: 4px; top: 6px; bottom: 6px; width: 3px; height: auto;
   min-height: 0; border-radius: 2px; background: var(--ok); }
-.acc .ord-grip { color: var(--sub); opacity: .5; }
-.acc tbody tr:hover .ord-grip { opacity: .95; }
+#view-accounts .acc .ord-grip { color: var(--sub); opacity: .5; }
+#view-accounts .acc tbody tr:hover .ord-grip { opacity: .95; }
 /* 色条格整体是 grab 光标，按钮要改回 pointer，否则 ⟲ 上也显示「抓手」 */
-.acc .mark button.ord { display: block; margin: 2px 0 0 5px; border-radius: 6px; cursor: pointer;
+#view-accounts .acc .mark button.ord { display: block; margin: 2px 0 0 5px; border-radius: 6px; cursor: pointer;
   box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
-.acc .mark button.ord:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.12); }
-[data-theme="light"] .acc .mark button.ord:hover:not(:disabled) { background: rgba(255,255,255,.8); }
+#view-accounts .acc .mark button.ord:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.12); }
+[data-theme="light"] #view-accounts .acc .mark button.ord:hover:not(:disabled) { background: rgba(255,255,255,.8); }
 .acc tbody tr.cool .mark i { background: var(--warn); }
 .acc tbody tr.off .mark i { background: var(--bad); }
 
@@ -491,11 +491,11 @@ input[type=checkbox]:disabled { opacity: .45; cursor: not-allowed; }
 [data-theme="light"] .acc td.acts .acts-in button.xs:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.75); }
 /* 状态列的失败原因：跟在状态标签后面排成一行，单行省略，不再把整行顶高。
    原来它是独立一行 —— 有 reason 的账号 59px，没有的 43px，高差全来自这里。 */
-.acc td > .st { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.acc td > .st > .tag { flex: none; }
+#view-accounts .acc td > .st { display: flex; align-items: center; gap: 7px; min-width: 0; }
+#view-accounts .acc td > .st > .tag { flex: none; }
 /* max-width 是给自动布局的表格看的：没有上限的话这一列的 max-content =
    标签 + 整条原因，直接把整表撑出卡片。min-width:0 才是让它收缩而不是折行。 */
-.acc td > .st > .hint { flex: 1 1 auto; min-width: 0; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-accounts .acc td > .st > .hint { flex: 1 1 auto; min-width: 0; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 窄窗口（≤1560）：操作列要固定 267px 才能一排放下 7 个按钮，宽度只能从信息列换。
    账号池先让出「在途 / 用量 / 最近成功」——这三列在 1620+ 的桌面上仍在，
    逐账号的用量也还能从状态标签的 tooltip 与「用量总览」页看到。
