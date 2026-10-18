@@ -690,7 +690,7 @@ function renderAccounts(list) {
         : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
       tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
     } else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
-    const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
+    const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3)">' + esc(s.reason) + '</div>' : '';
     const short = s.uid.length > 16 ? s.uid.slice(0, 16) + '…' : s.uid;
     const cred = s.credits == null ? '—' : (s.credits_total > 0 ? s.credits + '<span class="of">/' + s.credits_total + '</span>' : String(s.credits));
     const pct = s.credits_total > 0
@@ -723,15 +723,15 @@ function renderAccounts(list) {
     const rate = formatRate(tu.last_tokens_per_second);
     const usageTitle = '最近一次：' + req + ' 次 / ' + totalTok + ' / 延迟 ' + latency + ' / ' + rate;
     return '<tr class="' + cls + '" data-uid="' + esc(s.uid) + '" draggable="false" title="uid: ' + esc(s.uid) + '">' +
-      '<td class="mark" aria-hidden="true"><i></i></td>' +
-      '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + prBadge + '</div><div class="id">' + esc(short) + '</div><span class="ord-grp" title="手动排序：压过自动策略，但不创造资格">' +
-        // 排序改成整表拖动：手柄只负责"拎起这一行"，顺序由 drop 时一次性提交
-        // （accounts/reorder）。原来的 ↑↓ 每点一次只挪一格，账号一多就要连点。
-        '<span class="ord-drag" data-drag="' + esc(s.uid) + '" role="button" tabindex="0" draggable="true" ' +
-          'title="按住拖动：调整这个账号在池里的先后（不改变可用性）" aria-label="拖动排序">⠿</span>' +
-        (pr === 0 ? '' : '<button class="xs ghost ord" data-a="order" data-d="auto" data-u="' + esc(s.uid) + '" title="恢复自动排序（清除手动优先级）" aria-label="恢复自动排序">⟲</button>') +
-        '</span></td>' +
-      '<td>' + tag + note + '</td>' +
+      // 排序控件并进健康色条这一列：整格可拖（dragstart 仍按 tr[data-uid] 找行），
+      // ⠿ 只是「这里能拖」的提示，⟲ 是「恢复自动排序」（有损动作，点击前有二次确认）。
+      // 原来这两个控件挂在账号格右侧，账号名被吃掉 36px —— 现在整块还给昵称。
+      '<td class="mark" draggable="true" title="按住拖动：调整这个账号在池里的先后（不改变可用性）">' +
+        '<i></i><b class="ord-grip" aria-hidden="true">⠿</b>' +
+        (pr === 0 ? '' : '<button class="ord" draggable="false" data-a="order" data-d="auto" data-u="' + esc(s.uid) + '" title="恢复自动排序（清除手动优先级）" aria-label="恢复自动排序">⟲</button>') +
+      '</td>' +
+      '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + prBadge + '</div><div class="id">' + esc(short) + '</div></td>' +
+      '<td><span class="st">' + tag + note + '</span></td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
       '<td class="num">' + (s.in_flight || 0) + '</td>' +

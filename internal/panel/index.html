@@ -274,14 +274,14 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
   text-align: left; font-weight: 500; font-size: 11.5px; color: var(--ink-3);
   padding: 9px 11px; border-bottom: 1px solid var(--line); white-space: nowrap;
 }
-.acc td { padding: 11px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.acc td { padding: 5px 9px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .acc tr:last-child td { border-bottom: none; }
 .acc tbody tr:hover { background: var(--surface-2); }
 /* 健康色条用真实单元格（td.mark）实现，而不是 tr::before 伪元素：
    伪元素在表格行内会被浏览器当作匿名单元格插入行首，整行内容右移一列、
    与表头错位——窗口越宽列越宽越明显。 */
-.acc .mark { width: 3px; min-width: 3px; padding: 0; }
-.acc .mark i { display: block; width: 3px; height: 100%; min-height: 36px; background: var(--ok); }
+.acc .mark { width: 20px; min-width: 20px; padding: 0; position: relative; cursor: grab; }
+.acc .mark i { display: block; width: 3px; height: 100%; min-height: 22px; background: var(--ok); }
 .acc tbody tr.cool .mark i { background: var(--warn); }
 .acc tbody tr.off .mark i { background: var(--bad); }
 /* 模型表无色条（健康指示只属于账号表）。 */
@@ -326,19 +326,17 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .mdsg.warn { background: var(--warn); }
 .mdsg.bad { background: var(--bad); }
 .mdsg.void { background: color-mix(in srgb, var(--ink-3) 34%, transparent); }
-.who { min-width: 118px; max-width: 200px; }
+.who { min-width: 118px; max-width: 168px; }
 #taskTable .who { max-width: 360px; }
 #taskTable .who .nm, #taskTable .who .id { white-space: normal; word-break: break-all; }
 .who .nm { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who .id { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .realm-tag { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font: 500 10px/1 var(--sans); color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); vertical-align: 1px; }
-    /* 账号手动排序（面板 ↑↓ / ⟲）：图标按钮成组贴在操作列最左。排序改变的是
-       「选号策略」，与签到 / 余额这类「账号运维」动作不同类，故成组 + 留缝。 */
-    .ord-grp { display: flex; gap: 3px; margin-top: 5px; white-space: nowrap; }
-    .ord-grp > button.ord { min-width: 24px; padding: 2px 6px; font-size: 12px; line-height: 1.2; }
-    .ord-grp > button.ord + button.ord { margin-left: 0; }
-    .ord-grp > button.ord[data-d="up"] { color: var(--ok); }
-    .ord-grp > button.ord[data-d="down"] { color: var(--ink-3); }
+    /* 排序控件（拖动手柄 + 恢复自动）已并进左侧健康色条那一列：账号格不再为它
+       预留 36px 内边距，昵称能用上整列宽度。色条仍是状态色，手柄贴在它右边。 */
+.acc .ord-grip { display: block; margin-left: 9px; font-size: 10px; line-height: 1;
+  letter-spacing: -1px; color: var(--ink-3); user-select: none; -webkit-user-select: none; }
+.acc .mark button.ord { min-width: 0; padding: 0 2px; font-size: 11px; line-height: 1.15; }
     /* 账号名旁的手动优先级徽标：priority != 0 才渲染（0 是默认态，不占视觉） */
     .ord-tag { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 5px; font: 600 10px/1.6 var(--sans); vertical-align: 1px; }
     .ord-tag.up { color: var(--ok); background: var(--ok-soft); }
@@ -362,7 +360,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
    延迟 / 速率」落在同一列上，不再各自按内容宽度浮动；列宽按「再涨一位数」预留，
    数字变大只挤列宽、不换行错位。单元格左右各留 14px：.acc td 的 11px 内边距
    让这一列与左边「在途」、右边「最近成功」贴得太近。 */
-.acc td.usage-cell { min-width: 336px; padding-left: 14px; padding-right: 14px; }
+.acc td.usage-cell { min-width: 264px; padding-left: 10px; padding-right: 10px; }
 .usage-line {
   display: grid; grid-template-columns: 1fr 1.55fr 0.95fr 1.45fr; gap: 5px;
   align-items: center; width: 100%;
@@ -401,17 +399,20 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 /* 操作列：按钮多时换行而不是把表格撑出卡片右缘（1600 宽窗口下 9 个按钮
    会把「移除」挤出可视区）。按钮本身不换行，整组换行。 */
 .acts { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; row-gap: 4px; }
-.acts button { padding: 3.5px 8px; font-size: 12.5px; white-space: nowrap; flex: none; }
+.acts button { padding: 2px 6px; font-size: 11px; white-space: nowrap; flex: none; }
 /* 操作列定宽容器：账号动作已增至 6 个，让它们在窄窗口内换行，
    而不是把表格撑出卡片右缘（1280 宽时「移除」会被裁掉）。 */
-.acts-in { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; width: 208px; }
+.acts-in { display: flex; flex-wrap: nowrap; gap: 3px; justify-content: flex-end; width: max-content; }
 /* 窄屏（笔电 1280 一类）：操作按钮组保不住时，先让「在途」「最近成功」退场——
    这两列在窄屏上信息价值低于操作可达性；1600 以上仍是完整九列。 */
 @media (max-width: 1420px) {
   .acc th:nth-child(6), .acc td:nth-child(6),
   .acc th:nth-child(8), .acc td:nth-child(8) { display: none; }
+  /* 操作列一排 7 个按钮要 267px，宽度只能从信息列换：账号池再让出「用量」。
+     逐账号的次数/延迟/速率仍在 tooltip 与「用量总览」里，窄窗口先保操作可达。 */
+  #view-accounts .acc th:nth-child(7), #view-accounts .acc td:nth-child(7) { display: none; }
   .acc th, .acc td { padding-left: 8px; padding-right: 8px; }
-  .acts-in { width: 190px; }
+  .acts-in { gap: 3px; }
 }
 
 .empty { padding: 40px 20px; text-align: center; color: var(--ink-3); }

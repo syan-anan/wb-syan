@@ -440,24 +440,82 @@ input[type=checkbox]:disabled { opacity: .45; cursor: not-allowed; }
   color: var(--sub);
   font-weight: 650;
   font-size: 12.5px;
-  padding: 14px 18px;
+  padding: 8px 9px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--glass-soft);
   white-space: nowrap;
 }
-.acc td { padding: 16px 18px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.acc td { padding: 5px 9px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .acc tr:last-child td { border-bottom: none; }
 .acc tbody tr:hover { background: var(--row-hover); }
-.acc .mark i { width: 4px; border-radius: 0 3px 3px 0; min-height: 40px; background: var(--ok); }
+/* 色条列同时是排序把手：整格 draggable，色条绝对定位占满高度（top/bottom 内缩
+   6px），⠿ 手柄与 ⟲ 按钮走正常文档流、垂直居中排在色条右侧。
+   ⟲ 只在手动优先级非 0 时渲染，且带二次确认，不会和拖拽抢手势（按钮自己 draggable=false）。 */
+.acc .mark { cursor: grab; }
+.acc .mark:active { cursor: grabbing; }
+.acc .mark i { position: absolute; left: 4px; top: 6px; bottom: 6px; width: 3px; height: auto;
+  min-height: 0; border-radius: 2px; background: var(--ok); }
+.acc .ord-grip { color: var(--sub); opacity: .5; }
+.acc tbody tr:hover .ord-grip { opacity: .95; }
+/* 色条格整体是 grab 光标，按钮要改回 pointer，否则 ⟲ 上也显示「抓手」 */
+.acc .mark button.ord { display: block; margin: 2px 0 0 5px; border-radius: 6px; cursor: pointer;
+  box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.acc .mark button.ord:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.12); }
+[data-theme="light"] .acc .mark button.ord:hover:not(:disabled) { background: rgba(255,255,255,.8); }
 .acc tbody tr.cool .mark i { background: var(--warn); }
 .acc tbody tr.off .mark i { background: var(--bad); }
 
-.who .nm { font-weight: 650; font-size: 13.5px; }
-.who .id { font-family: var(--mono); font-size: 11.5px; color: var(--sub); }
+.who .nm { font-weight: 650; font-size: 13px; line-height: 1.3; }
+.who .id { font-family: var(--mono); font-size: 11px; line-height: 1.25; color: var(--sub); }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .cred .n { font-family: var(--mono); font-size: 13px; }
 .cred .n .of { color: var(--sub); }
 .acts button { border-radius: 11px; }
+/* ── 账号池密集化（v1.19.6）：一行一账号 ──────────────────────────────
+   行高由两个因素撑起来：.acc td 的 16px 上下内边距，和操作列 7 个按钮换行。
+   theme.css 在面板内联样式之后加载，同特异性会压掉 index.html 里的值
+   （button.xs 与 .acts button 特异性相同、顺序在后 → 赢），所以尺寸
+   必须在主题层改。这里把操作按钮收进 .acc td.acts 作用域，只影响账号池，
+   不动 .ord-grp 的排序按钮，也不动模型表的 td.acts（那里没有 .acts-in）。
+   按钮 11px / padding 2px 6px：两个汉字约 34px，七个一排约 252px，
+   配合 who 168px、用量列 292px，1620 窗口下整表 < 卡片内容宽，不横向溢出。 */
+.acc .who { min-width: 108px; max-width: 156px; }
+.acc td.acts { padding-left: 6px; }
+.acc td.acts .acts-in { flex-wrap: nowrap; width: max-content; gap: 3px; }
+.acc td.acts .acts-in button.xs {
+  padding: 2px 5px; font-size: 11px; line-height: 1.45; border-radius: 8px;
+  letter-spacing: 0; backdrop-filter: none; -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+.acc td.acts .acts-in button.xs:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.08); }
+[data-theme="light"] .acc td.acts .acts-in button.xs:hover:not(:disabled) { transform: none; box-shadow: none; background: rgba(255,255,255,.75); }
+/* 状态列的失败原因：跟在状态标签后面排成一行，单行省略，不再把整行顶高。
+   原来它是独立一行 —— 有 reason 的账号 59px，没有的 43px，高差全来自这里。 */
+.acc td > .st { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.acc td > .st > .tag { flex: none; }
+/* max-width 是给自动布局的表格看的：没有上限的话这一列的 max-content =
+   标签 + 整条原因，直接把整表撑出卡片。min-width:0 才是让它收缩而不是折行。 */
+.acc td > .st > .hint { flex: 1 1 auto; min-width: 0; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 窄窗口（≤1560）：操作列要固定 267px 才能一排放下 7 个按钮，宽度只能从信息列换。
+   账号池先让出「在途 / 用量 / 最近成功」——这三列在 1620+ 的桌面上仍在，
+   逐账号的用量也还能从状态标签的 tooltip 与「用量总览」页看到。
+   另外补一版内边距：index.html 的 media 块写的是 .acc th/td { padding-left: 8px }，
+   与这里的 .acc td 同特异性但顺序在前，不覆盖就等于没写（实测一直是 9px）。
+   只圈 #view-accounts，别连带把模型表的第 6/7/8 列也吃掉。 */
+@media (max-width: 1560px) {
+  #view-accounts .acc th:nth-child(6), #view-accounts .acc td:nth-child(6),
+  #view-accounts .acc th:nth-child(7), #view-accounts .acc td:nth-child(7),
+  #view-accounts .acc th:nth-child(8), #view-accounts .acc td:nth-child(8) { display: none; }
+  #view-accounts .acc th, #view-accounts .acc td { padding-left: 6px; padding-right: 6px; }
+  #view-accounts .acc td.usage-cell { padding-left: 6px; padding-right: 6px; }
+}
+/* 更窄一档（≤1180）：连失败原因也先让位。它排在状态标签后面，标签一长
+   （「限流冷却 · 3分钟」）就会把这半句挤到第二行，行高从 43 跳到 60，
+   整表也因为这一列多占 ~70px 而横向溢出。全文在运行日志里看。 */
+@media (max-width: 1180px) {
+  #view-accounts .acc .st > .hint { display: none; }
+  #view-accounts .acc .who { max-width: 132px; }
+}
 
 /* ── 弹窗 ── */
 .veil { background: rgba(10,12,24,.55); backdrop-filter: blur(26px) saturate(1.2); -webkit-backdrop-filter: blur(26px) saturate(1.2); }
@@ -986,7 +1044,7 @@ select:disabled { opacity: .5; }
   .acc th, .acc td { padding: 9px 7px; }
   .acc.md th, .acc.md td { padding: 7px 6px; }
   .acc { font-size: 12.5px; }
-  .acc .who { min-width: 84px; max-width: 130px; }
+  .acc .who { min-width: 96px; max-width: 172px; }
   .acc.md .mdstat-h { min-width: 0; }
   .mds { padding: 0 6px; }
   .mds-wide { min-width: 128px; }
