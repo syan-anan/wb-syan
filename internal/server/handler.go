@@ -613,9 +613,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if prov, bare, ok := h.cfg.Compat.Split(peek.Model); ok {
 			// 用全名（provider:model）判白名单：面板里写 "groq:llama-3.3" 也能命中，
 			// 写裸名同样生效（AllowsModel 会同时比对裸名）。
-			if reason := h.keyAccessDeniedAnyRealm(id, peek.Model); reason != "" {
-				log.Printf("compat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
-				writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+			if deny := h.keyAccessDeniedAnyRealm(id, peek.Model); deny.Denied() {
+				log.Printf("compat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, deny.Reason)
+				writeOpenAIError(w, deny.Status(), deny.Code, deny.Reason)
 				return
 			}
 			release, reason := h.acquireKeySlot(id)
@@ -636,9 +636,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 必须在 resolveModel 之前判：resolveModel 只认 cn:/global: 两种前缀。
 	if strings.HasPrefix(peek.Model, qoderModelPrefix) {
 		qModel := strings.TrimPrefix(peek.Model, qoderModelPrefix)
-		if reason := h.keyAccessDeniedAnyRealm(id, peek.Model); reason != "" {
-			log.Printf("qoder: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
-			writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+		if deny := h.keyAccessDeniedAnyRealm(id, peek.Model); deny.Denied() {
+			log.Printf("qoder: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, deny.Reason)
+			writeOpenAIError(w, deny.Status(), deny.Code, deny.Reason)
 			return
 		}
 		release, reason := h.acquireKeySlot(id)
@@ -661,11 +661,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 调用方身份（主密钥 / 子密钥）：子密钥可绑定账号白名单，选号与粘性都限定在
 	// 白名单内（分流管理）。withAuth 已注入；缺省主身份（不限定账号）。
 	// id 已在分支之前取出（三条上游共用），这里不再重复解析。
-	// 子密钥分流约束（模型 / 域 / 时段 / 有效期 / 请求配额）：任一不通过就地 403，
-	// 不进入选号与上游调用。账号白名单不在这里判（选号侧 AllowSet 兜底，避免双口径）。
-	if reason := h.keyAccessDenied(id, realm, bareModel); reason != "" {
-		log.Printf("chat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, reason)
-		writeOpenAIError(w, http.StatusForbidden, "key_restricted", reason)
+	// 子密钥分流约束（模型 / 域 / 时段 / 有效期 / 请求配额）：任一不通过就地拒绝
+	// （约束类 403、额度类 402），不进入选号与上游调用。账号白名单不在这里判（选号侧 AllowSet 兜底，避免双口径）。
+	if deny := h.keyAccessDenied(id, realm, bareModel); deny.Denied() {
+		log.Printf("chat: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, deny.Reason)
+		writeOpenAIError(w, deny.Status(), deny.Code, deny.Reason)
 		return
 	}
 	// 在途并发名额：与模型/配额判定分开，因为要持有到请求结束（defer）。
@@ -959,14 +959,19 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			status = uerr.Status
 		}
 		if uerr == nil && terr != nil {
-			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
-			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
-			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
+			// 网络层抖动：只换号，**不记任何账号级惩罚**（既不喂熔断，也不喂连败）。
+			//
+			// 为什么连败也不喂：一次请求里所有候选号走的是同一条出口链路。一个号
+			// connection reset 说明链路在抖，不说明这个号有问题。喂连败计数的话，
+			// 上游机房抖三秒就能把整池号逐个踢出池，然后返回「没有可用账号」——
+			// 比继续撞下去糟得多，而且故障恢复后还要等降权到期才回来。
+			// 防打爆交给请求内的轮转重试预算（rotateBackoff / 候选上限），它天然有界。
+			//
+			// recordAttempt 仍然记：那是观测（失败尝试计入请求数），不是惩罚。
 			// 上游 client 已打 transport error 日志。
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, 0, false)
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
-			h.cfg.Pool.NoteFailures(acct.UID)
 			fail(acct.UID)
 			if !rotateBackoff(i, r.Context()) {
 				break // ctx 取消：终止轮转（传输层错误换号退避）
@@ -1333,8 +1338,16 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		}
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "account fault (14017)")
 	case upstream.ErrServer:
-		// 5xx 上游故障：Classify 已把 ≥500 判为 ErrServer，在此喂熔断计数（不再手写 status>=500）。
-		h.cfg.Pool.NoteError(uid)
+		// 5xx 上游故障：不喂整账号熔断，改记 (账号, 模型) 30 秒短避让。
+		//
+		// 为什么：5xx 绝大多数是某个模型的后端实例挂了，跟这个号是谁无关；按账号
+		// 惩罚会让一次供应商侧抖动把整池踢光。但完全不动也有代价——同一请求内会
+		// 反复撞同一个坏实例，白烧重试次数，所以要留一个短避让把这一组合暂时避开，
+		// 同账号的其他模型照常可用（口径见 pool.AvoidModelBriefly）。
+		// model 为空（防御路径）时不动账号，宁可不避让也不误伤。
+		if model != "" {
+			h.cfg.Pool.AvoidModelBriefly(uid, model, "upstream 5xx (transient)")
+		}
 	case upstream.ErrContentBlocked:
 		// 内容策略拦截（误报）：内容问题非账号问题，不罚账号（无冷却/熔断/NoteError）。
 		// passthrough 模式由 chatCompletions 内降级重试处理；custom 模式本不会到此分支。

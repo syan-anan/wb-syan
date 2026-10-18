@@ -760,11 +760,28 @@ func TestChatTransportErrorDoesNotPenalize(t *testing.T) {
 	if st.Cooling || st.ErrTotal != 0 {
 		t.Fatalf("transport error should not penalize account: %+v", st)
 	}
+	// 连败也不喂：链路抖动时把所有号逐个踢出池 = 自我雪崩（返回「没有可用账号」，
+	// 故障恢复后还要等降权到期）。跑满阈值次数，账号仍应完全正常。
+	for i := 0; i < 10; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	}
+	p.SetDegrade(2, time.Hour, time.Hour)
+	for i := 0; i < 5; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	}
+	st2, _ := p.Status("u1")
+	if st2.Cooling || st2.ConsecutiveFails != 0 || !st2.DegradeUntil.IsZero() {
+		t.Fatalf("transport error must not degrade the account: %+v", st2)
+	}
 }
 
-func TestChatHTTP5xxPenalizes(t *testing.T) {
+// TestChatHTTP5xxAvoidsModelNotAccount 上游 5xx 是模型侧故障，不是账号的锅：
+// 不喂熔断、不冷却账号，只给 (账号, 模型) 记一次短避让。
+// 熔断阈值刻意设成 1 —— 只要还走 NoteError，一次 500 就会把号熔断，断言必炸。
+func TestChatHTTP5xxAvoidsModelNotAccount(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	// 熔断阈值 1：一次 5xx 即触发熔断（连续失败语义并入熔断器）。
 	p.SetBreaker(1, time.Hour, time.Hour)
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 500, `{"code":500}`, false
@@ -776,8 +793,23 @@ func TestChatHTTP5xxPenalizes(t *testing.T) {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
 	st, _ := p.Status("u1")
-	if !st.Cooling {
-		t.Fatalf("http 5xx should trip breaker (cooling) with threshold=1: %+v", st)
+	if st.Cooling {
+		t.Fatalf("http 5xx must not cool the account: %+v", st)
+	}
+	if st.ErrTotal != 0 {
+		t.Fatalf("http 5xx must not feed the breaker counter, got ErrTotal=%d", st.ErrTotal)
+	}
+	if len(st.RateLimitedModels) == 0 {
+		t.Fatal("http 5xx should record a (account, model) avoidance entry")
+	}
+	var hit bool
+	for _, m := range st.RateLimitedModels {
+		if strings.Contains(m.Model, "glm-5.2") {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("avoidance should cover the requested model, got %+v", st.RateLimitedModels)
 	}
 }
 

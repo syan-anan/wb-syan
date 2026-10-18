@@ -151,6 +151,48 @@ const (
 // 无此模型、重试无意义，只能换模型/换账号」。resetAt 无需传（11102 无重置文案），
 // ResetAt 保持零值，与 6004 台账共用 Until 判定——11102 条目会以 11102 reason 出现在
 // /status 台账，运维可见。
+// modelAvoidTTL 上游 5xx 的 (账号, 模型) 短避让时长。固定值，不随次数升级：
+// 5xx 是供应商侧瞬时故障，升级惩罚只会把「等 30 秒再来」变成「等十分钟」。
+const modelAvoidTTL = 30 * time.Second
+
+// AvoidModelBriefly 给 (账号, 模型) 记一次固定时长的短避让（上游 5xx 用）。
+//
+// 为什么不罚账号：5xx 绝大多数是某个模型的后端实例故障，跟「这个号是谁」无关。
+// 按账号降权会让一次机房抖动把整池踢光，故障恢复后还得等冷却到期才回来。
+// 记到 (账号, 模型) 组合上，选号侧 healthyForModel 自动避开这一组合，同账号的
+// 其他模型照常可用。
+//
+// 与 BlockModelBackoff（11102 负缓存）的区别：固定 TTL、不指数升级、reason 不带
+// "11102" 前缀，因此不会被 BlockModelClear 当成 11102 条目提前抹掉。
+func (p *Pool) AvoidModelBriefly(uid, model, reason string) {
+	if uid == "" || model == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	until := now.Add(modelAvoidTTL)
+	hits := 1
+	if e.modelCooldowns != nil {
+		if cur, existed := e.modelCooldowns[model]; existed {
+			hits = cur.Hits + 1
+			// 已有更长避让（6004 到上游重置点 / 11102 升级）时不缩短，只补 reason。
+			if cur.Until.After(until) {
+				return
+			}
+		}
+	}
+	if e.modelCooldowns == nil {
+		e.modelCooldowns = map[string]modelCooldown{}
+	}
+	e.modelCooldowns[model] = modelCooldown{Until: until, Reason: reason, Hits: hits}
+	p.dirty.Store(true)
+}
+
 func (p *Pool) BlockModelBackoff(uid, model, reason string) {
 	if uid == "" || model == "" {
 		return

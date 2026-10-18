@@ -111,6 +111,29 @@ body {
 .ln .lch.c-chat { background: var(--ok-soft); color: var(--ok); }
 .ln .lch.c-sys { background: var(--surface-2); color: var(--ink-3); }
 
+/* 日志筛选条：频道 + 结果档位 + 三个检索框（全部走服务端筛选，见 logsview.go） */
+.logbar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 9px 17px; border-bottom: 1px solid var(--line);
+}
+.logbar .chips { flex: none; }
+.logbar input {
+  width: auto; padding: 4.5px 10px; font-size: 12.5px; border-radius: 999px; flex: 1 1 130px; min-width: 110px;
+}
+.logbar input#logQ { flex: 2 1 200px; }
+.logbar .sep { width: 1px; height: 18px; background: var(--line); flex: none; }
+
+/* 行详情（点开一行的键值表）。ln 加下划线太吵，用 hover 底色 + 光标提示可点。 */
+#logBox .ln { cursor: pointer; border-radius: 5px; }
+#logBox .ln:hover { background: var(--surface-2); }
+#logBox .lnd {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px;
+  margin: 2px 0 6px 1.2em; padding: 8px 12px; font-size: 0.62em; line-height: 1.45;
+  background: var(--surface-2); border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0;
+  color: var(--ink-2); white-space: pre-wrap; word-break: break-all;
+}
+#logBox .lnd b { font-weight: 600; color: var(--ink-3); }
+
 /* 任务中心 */
 .tc-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 42px 16px; color: var(--ink-3); }
 .tc-empty svg { width: 42px; height: 42px; opacity: .55; margin-bottom: 6px; }
@@ -1400,16 +1423,30 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         <header>
           <h3>运行日志</h3>
           <span class="grow"></span>
+          <span class="note" id="logNote">最近 500 行</span>
+          <button class="xs" id="btnLogZh" title="中文行由服务端渲染，悬停任意一行看原文">中文</button>
+          <button class="xs" id="btnLogPin">自动滚动：开</button>
+          <button class="xs" id="btnLogExport" title="按当前筛选导出纯文本日志（Bearer / 密钥 / token 已脱敏）">导出</button>
+        </header>
+        <div class="logbar">
           <span class="chips" id="logChips">
-            <button class="xs chip on" data-ch="all">全部</button>
+            <button class="xs chip on" data-ch="all">全部频道</button>
             <button class="xs chip" data-ch="task">任务</button>
             <button class="xs chip" data-ch="chat">对话</button>
             <button class="xs chip" data-ch="sys">系统</button>
           </span>
-          <span class="note" id="logNote">最近 500 行</span>
-          <button class="xs" id="btnLogZh" title="中文行由服务端渲染，悬停任意一行看原文">中文</button>
-          <button class="xs" id="btnLogPin">自动滚动：开</button>
-        </header>
+          <span class="sep"></span>
+          <span class="chips" id="logResChips">
+            <button class="xs chip on" data-res="all">全部结果</button>
+            <button class="xs chip" data-res="ok">成功</button>
+            <button class="xs chip" data-res="warn">警告</button>
+            <button class="xs chip" data-res="err">失败</button>
+            <button class="xs chip" data-res="info">其它</button>
+          </span>
+          <input id="logQ" placeholder="搜索日志内容" title="按关键词过滤（不区分大小写）" />
+          <input id="logAcct" placeholder="账号" title="按账号昵称过滤" />
+          <input id="logModel" placeholder="模型" title="按模型名过滤" />
+        </div>
         <pre id="logBox"></pre>
       </div>
     </section>
@@ -1500,6 +1537,14 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <!-- 手机号登录（+86 / +852 / +853） -->
       <div id="addTabPhone" class="tab-panel" hidden>
         <div class="hint" style="margin-bottom:8px">用手机号 + 短信验证码直接登录并加入号池（仅国内版）。验证码由上游下发，请确保号码可收短信。</div>
+        <!-- 原位重登目标：从账号行的「重登」进来时带上，登录结果必须落到这个 uid。
+             手工新增时整行隐藏，行为与以前完全一致。 -->
+        <div id="phTarget" class="ph-target" hidden>
+          <span class="hint" style="font-size:12px">原位重登：</span>
+          <b id="phTargetName"></b>
+          <span class="hint" style="font-size:11.5px" id="phTargetUid"></span>
+          <button type="button" class="xs ghost" id="phTargetClear">改为新增账号</button>
+        </div>
         <div class="realm-row">
           <label class="sel-note">地区<select id="phCC">
             <option value="86">中国大陆 +86</option>

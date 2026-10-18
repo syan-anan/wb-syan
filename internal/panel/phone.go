@@ -2,7 +2,9 @@
 //
 //	POST /panel/api/login/phone/start                → 建会话，返回 sid + 支持的地区
 //	POST /panel/api/login/phone/send   {sid,mobile,country_code} → 发验证码
-//	POST /panel/api/login/phone/verify {sid,code}   → 校验并完成登录（落盘 + 热加载入池）
+//	POST /panel/api/login/phone/verify {sid,code[,expect_uid]} → 校验并完成登录（落盘 + 热加载入池）
+//	                                        expect_uid 非空 = 「原位重登」：登录结果必须落到该 uid，
+//	                                        不符则 409 拒绝写入（既不新增号，也不覆盖别的号）
 //	GET  /panel/api/login/phone/status?sid=         → 会话状态（前端轮询/排障）
 //
 // 与既有的「浏览器登录」（login.go 的设备授权流）并列：那条走 OAuth 授权页，
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/syan-anan/wb-syan/internal/auth"
+	"github.com/syan-anan/wb-syan/internal/logfmt"
 	"github.com/syan-anan/wb-syan/internal/phonelogin"
 )
 
@@ -112,11 +115,15 @@ func (p *Panel) phoneVerify(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SID  string `json:"sid"`
 		Code string `json:"code"`
+		// ExpectUID 非空时本次登录必须落到**这个** uid（面板「原位重登」用）。
+		// 空 = 新增登录（保持原行为：登进来谁就加谁）。
+		ExpectUID string `json:"expect_uid"`
 	}
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeErr(w, http.StatusBadRequest, "解析请求失败: "+err.Error())
 		return
 	}
+	expectUID := strings.TrimSpace(body.ExpectUID)
 	res, err := m.Verify(r.Context(), body.SID, body.Code)
 	if err != nil {
 		phoneErr(w, err)
@@ -132,6 +139,32 @@ func (p *Panel) phoneVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "上游返回的 uid 含非法字符，拒绝落盘（防路径穿越）")
 		return
 	}
+	// 原位重登的身份核验：登进来的必须是**用户点重登的那个号**。
+	//
+	// 为什么必须在落盘之前判：凭证文件名就是 workbuddy-<uid>.json，一旦按登录结果
+	// 写盘，错号会留下两种坏结果——uid 已存在时**覆盖掉另一个号的活凭证**（那个号
+	// 当场掉线），uid 不存在时**凭空多出一个号**。两种都不可回滚，而验证码已经消耗
+	// 掉了，用户还得重发一次。宁可拒绝入库，也要把「谁被改动」这件事钉死。
+	if expectUID != "" && expectUID != a.UID {
+		log.Printf("panel: 原位重登身份不符 expect=%s got=%s（拒绝落盘）", expectUID, a.UID)
+		msg := "这次短信登录进来的是另一个账号（" + nicknameOf(a) + " uid " + logfmt.UID8(a.UID) +
+			"），不是要点重登的账号（uid " + logfmt.UID8(expectUID) + "）。凭证未写入、账号未新增——" +
+			"请确认用的是同一个手机号，或改用「添加账号」把它作为新号加入。"
+		// error/message 双写同一个口径（与 phonelogin.Error.Reply 一致）：面板的
+		// api() 只认 d.error，少了它用户看到的就是 "HTTP 409"。
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"ok":           false,
+			"error":        msg,
+			"message":      msg,
+			"step":         "identity_check",
+			"reason":       "login_uid_mismatch",
+			"got_uid":      a.UID,
+			"got_nickname": a.Nickname,
+			"expect_uid":   expectUID,
+		})
+		return
+	}
+	inPlace := expectUID != ""
 	if err := os.MkdirAll(p.cfg.AuthDir, 0o755); err != nil {
 		writeErr(w, http.StatusInternalServerError, "mkdir auth dir: "+err.Error())
 		return
@@ -156,12 +189,28 @@ func (p *Panel) phoneVerify(w http.ResponseWriter, r *http.Request) {
 		remain, total = rm, tt
 		p.cfg.Pool.ReenableIfCredits(a.UID, rm, tt)
 	}
-	log.Printf("panel: 手机号登录成功 uid=%s nickname=%q（免重启热加载）", a.UID, a.Nickname)
+	if inPlace {
+		log.Printf("panel: 手机号原位重登成功 uid=%s nickname=%q（凭证原地覆盖，免重启热加载）", a.UID, a.Nickname)
+	} else {
+		log.Printf("panel: 手机号登录成功 uid=%s nickname=%q（免重启热加载）", a.UID, a.Nickname)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "uid": a.UID, "nickname": a.Nickname,
 		"phone": res.Phone, "realm": res.Realm,
-		"credits": remain, "credits_total": total, "checkin_message": checkinMsg,
+		"in_place": inPlace,
+		"credits":  remain, "credits_total": total, "checkin_message": checkinMsg,
 	})
+}
+
+// nicknameOf 登录结果的展示名：有昵称用昵称，没有则退回 uid 前缀（避免前端显示空白）。
+func nicknameOf(a *auth.Auth) string {
+	if a == nil {
+		return "未知账号"
+	}
+	if n := strings.TrimSpace(a.Nickname); n != "" {
+		return "「" + n + "」"
+	}
+	return "账号"
 }
 
 // phoneStatus 会话状态（前端轮询 / 排障）。

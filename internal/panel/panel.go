@@ -214,6 +214,8 @@ func (p *Panel) routes() {
 	// 手动触发一次检查（面板侧栏「检查更新」按钮）：会等网络，最多 10s。
 	p.mux.HandleFunc("POST /panel/api/update/check", p.withAuth(p.updateCheckNow))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
+	// 按当前筛选导出日志（纯文本/JSON，凭据已脱敏，见 logsview.go）。
+	p.mux.HandleFunc("GET /panel/api/logs/export", p.withAuth(p.logsExportHandler))
 	// 错误三层诊断：从日志环里还原上游错误行（本网关判断 / 客户端解释 / 上游证据）。
 	p.mux.HandleFunc("GET /panel/api/diagnose", p.withAuth(p.diagnoseHandler))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
@@ -384,10 +386,7 @@ func (p *Panel) updateCheckNow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p.upd.checkNow())
 }
 
-// logsHandler 返回日志环形缓冲快照（时间升序，含频道标记 chat/task/sys）。
-func (p *Panel) logsHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"entries": p.logs.Snapshot()})
-}
+// logsHandler / logsExportHandler 在 logsview.go：统计、筛选、明细与脱敏导出。
 
 // models 实时查询上游模型列表与 reasoning 实际档位（直连上游，不读路由层 1h 缓存）：
 // 回答"该模型到底支持哪几档思考"。顺带刷新 client 的 effort 降级能力缓存。

@@ -80,6 +80,32 @@ else
   docker compose up -d --build
 fi
 
+# ---------- 5.5 清理更新留下的残留（只保留最近 KEEP_ROLLBACKS 个回滚镜像） ----------
+# 每次更新都会打一个 wb-syan-rollback:<时间戳>，攒下去全是死镜像（每个几百 MB）。
+# 只按名字清 wb-syan-rollback，绝不碰别的项目的镜像（同机还跑着 syan-7 / qinglong 等）。
+KEEP_ROLLBACKS="${KEEP_ROLLBACKS:-1}"
+prune_rollbacks() {
+  local list
+  list="$(docker image ls --format '{{.Repository}} {{.Tag}}' 2>/dev/null | awk '$1=="wb-syan-rollback"' | sort -k2 -r || true)"
+  [ -z "$list" ] && return 0
+  local dead
+  dead="$(printf '%s\n' "$list" | tail -n +$((KEEP_ROLLBACKS + 1)) | awk '{print $1":"$2}' || true)"
+  if [ -n "$dead" ]; then
+    say "清理旧回滚镜像（保留最近 $KEEP_ROLLBACKS 个）"
+    # while-read 而不是 xargs：-r 是 GNU 扩展，精简镜像里不一定有；逐个删也更好定位失败项。
+    while IFS= read -r img; do
+      [ -z "$img" ] && continue
+      if docker rmi "$img" >/dev/null 2>&1; then say "已删除 $img"; else say "$img 删除失败（可能被容器占用），跳过"; fi
+    done <<EOF
+$dead
+EOF
+  fi
+}
+prune_rollbacks
+# 构建缓存：每次 patch 构建都会留一层，跑完就没用了。只清本机能共享的 builder 缓存，
+# 不动镜像层（docker image prune 会误伤其它项目的悬空层）。
+docker builder prune -f >/dev/null 2>&1 && say "已清理构建缓存" || true
+
 # ---------- 6. 等待健康检查 ----------
 say "等待服务就绪…"
 ok=0

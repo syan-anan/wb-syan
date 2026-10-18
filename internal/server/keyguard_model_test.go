@@ -11,14 +11,14 @@ import (
 func TestKeyAccessDeniedModelDaily(t *testing.T) {
 	h := &Handler{cfg: Config{KeyQuota: keys.NewQuota("")}}
 	id := keys.Identity{KeyID: "kmd", ModelDaily: map[string]int{"glm-5.2": 1}}
-	if r := h.keyAccessDenied(id, "cn", "glm-5.2"); r != "" {
-		t.Fatalf("首次应放行，got %q", r)
+	if r := h.keyAccessDenied(id, "cn", "glm-5.2"); r.Denied() {
+		t.Fatalf("首次应放行，got %q", r.Reason)
 	}
-	if r := h.keyAccessDenied(id, "cn", "glm-5.2"); r == "" || !strings.Contains(r, "模型") {
-		t.Fatalf("超过模型日限应拒绝，got %q", r)
+	if r := h.keyAccessDenied(id, "cn", "glm-5.2"); !r.Denied() || !strings.Contains(r.Reason, "模型") {
+		t.Fatalf("超过模型日限应拒绝，got %q", r.Reason)
 	}
-	if r := h.keyAccessDenied(id, "cn", "glm-5.3"); r != "" {
-		t.Fatalf("其它模型不应受影响，got %q", r)
+	if r := h.keyAccessDenied(id, "cn", "glm-5.3"); r.Denied() {
+		t.Fatalf("其它模型不应受影响，got %q", r.Reason)
 	}
 }
 

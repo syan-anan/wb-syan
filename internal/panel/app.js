@@ -396,6 +396,7 @@ $('btnKey').onclick = async () => {
     $('keyErr').hidden = true;
     $('keyVeil').classList.remove('on');
     start();
+    go(view);  // 登录后重放当前视图：首帧直接落在 #logs/#taskscenter 时不再等 5s 轮询
   } catch (e) { $('keyErr').hidden = false; }
 };
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
@@ -749,6 +750,11 @@ function renderAccounts(list) {
         '<button class="xs ghost" data-a="compensation" data-u="' + esc(s.uid) + '">领补偿</button>' +
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
+        // 原位重登：登录结果必须落回这个 uid，不符就拒绝写入（后端 phoneVerify 核验）。
+        // 只在 CN 号上给入口——短信体系只有国内有，国际版的号点了也发不出码。
+        (s.realm === 'global' ? ''
+          : '<button class="xs ghost" data-a="relogin" data-u="' + esc(s.uid) +
+            '" data-n="' + esc(s.nickname || '') + '" title="用短信验证码把这个号重新登录（凭证原地覆盖，不会新增账号）">重登</button>') +
         '<button class="xs ghost danger" data-a="remove" data-u="' + esc(s.uid) + '">移除</button>' +
       '</div></td></tr>';
   }).join('');
@@ -865,6 +871,9 @@ $('accBody').addEventListener('click', async ev => {
   // 恢复自动是有损动作（清掉人工排序），二次确认；↑↓ 是可逆的，不打断。
   if (a === 'order' && b.dataset.d === 'auto' && !confirm('恢复该账号的自动排序（清除手动优先级）？')) return;
   if (a === 'disable' && !confirm('禁用后该账号不再参与选号，需手动解冻才能恢复。确认禁用？')) return;
+  // 原位重登是「打开对话框让人去登录」，不是对服务端的写操作：直接开面板、
+  // 不改这个按钮的状态，也不触发 finally 里的整表重载。
+  if (a === 'relogin') { openAdd({ uid: u, nickname: b.dataset.n || '' }); return; }
   b.disabled = true;
   try {
     if (a === 'order') {
@@ -1258,8 +1267,15 @@ if ($('mdRange')) {
   };
 }
 
-/* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
+/* ── 日志：服务端筛选（频道/结果/账号/模型/关键词）+ 全环统计 + 行明细 ───── */
+/* 结果档位（成功/警告/失败/其它）由服务端判定（logsview.go）：对话行看状态码、
+   429 记警告；任务/系统行看级别前缀与错误诊断。筛选全走 query——页面统计和
+   导出文件同一份口径，不再前端猜。 */
 let logCh = 'all';
+let logRes = 'all';
+let logQ = '', logAcct = '', logModel = '';
+let logOpen = new Set();  // 展开的行（时间+内容前缀做 key，自动刷新后保持展开）
+let logLast = null;       // 最近一次数据：展开/收起详情只重渲染，不重拉接口
 $('logChips').addEventListener('click', ev => {
   const b = ev.target.closest('button[data-ch]');
   if (!b) return;
@@ -1267,6 +1283,33 @@ $('logChips').addEventListener('click', ev => {
   document.querySelectorAll('#logChips .chip').forEach(c => c.classList.toggle('on', c === b));
   loadLogs();
 });
+if ($('logResChips')) $('logResChips').addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-res]');
+  if (!b) return;
+  logRes = b.dataset.res;
+  document.querySelectorAll('#logResChips .chip').forEach(c => c.classList.toggle('on', c === b));
+  loadLogs();
+});
+function logParams() {
+  const qs = [];
+  if (logCh !== 'all') qs.push('ch=' + encodeURIComponent(logCh));
+  if (logRes !== 'all') qs.push('result=' + encodeURIComponent(logRes));
+  if (logAcct) qs.push('account=' + encodeURIComponent(logAcct));
+  if (logModel) qs.push('model=' + encodeURIComponent(logModel));
+  if (logQ) qs.push('q=' + encodeURIComponent(logQ));
+  return qs.join('&');
+}
+let logTimer = 0;
+function logSearchInput() {
+  logQ = ($('logQ').value || '').trim();
+  logAcct = ($('logAcct').value || '').trim();
+  logModel = ($('logModel').value || '').trim();
+  clearTimeout(logTimer);
+  logTimer = setTimeout(loadLogs, 350);
+}
+if ($('logQ')) $('logQ').oninput = logSearchInput;
+if ($('logAcct')) $('logAcct').oninput = logSearchInput;
+if ($('logModel')) $('logModel').oninput = logSearchInput;
 /* 日志中文开关：中文行由服务端拆成列下发（internal/panel/logzh.go 的
    RenderZhCols），面板把列铺成固定列宽的网格——SyanRound 不是等宽字体，靠
    空格填充对齐会越走越歪。中文行自带频道名（对话·流式 / 系统·警告 /
@@ -1316,36 +1359,82 @@ function fitPx(s, maxPx) {
   return out + '…';
 }
 
+function logRowKey(e) { return (e.ts || '') + '|' + (e.text || '').slice(0, 60); }
+function renderLogRows() {
+  const box = $('logBox');
+  const d = logLast;
+  if (!d) return;
+  const entries = d.entries || [];
+  box.innerHTML = entries.length
+    ? entries.map(e => {
+      const cols = (logZh && e.zhCols && e.zhCols.length) ? e.zhCols : null;
+      const tt = e.ts ? new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+      const lvl = e.res === 'err' ? ' e' : (e.res === 'warn' ? ' w' : '');
+      const k = esc(logRowKey(e));
+      let row;
+      if (cols) {
+        const cells = '<i>' + esc(tt) + '</i>' + cols.map(c => '<i>' + esc(c) + '</i>').join('');
+        row = '<span class="ln lng c' + (cols.length + 1) + lvl + '" data-k="' + k + '" title="' + esc(e.text) + '">' + cells + '</span>';
+      } else {
+        const ch = (logCh === 'all') ? '<i class="lch c-' + esc(e.ch) + '">' + ({ task: '任务', chat: '对话', sys: '系统' }[e.ch] || e.ch) + '</i>' : '';
+        const body = fitPx(e.text, box.clientWidth - 34 - (ch ? 46 : 0) - logMeasure(tt + ' '));
+        row = '<span class="ln' + lvl + '" data-k="' + k + '" title="' + esc(e.text) + '">' + esc(tt) + ' ' + ch + esc(body) + '</span>';
+      }
+      if (logOpen.has(logRowKey(e))) {
+        const det = (e.detail || []).map(kv => '<b>' + esc(kv.k) + '</b><i>' + esc(kv.v) + '</i>').join('');
+        row += '<span class="lnd">' + (det || '<b>明细</b><i>（无）</i>') + '</span>';
+      }
+      return row;
+    }).join('')
+    : '<span style="color:var(--ink-3)">没有符合条件的日志</span>';
+}
 async function loadLogs() {
   const box = $('logBox');
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
   try {
-    const d = await api('logs');
-    const entries = (d.entries || []).filter(e => logCh === 'all' || e.ch === logCh);
-    box.innerHTML = entries.length
-      ? entries.map(e => {
-        const cols = (logZh && e.zhCols && e.zhCols.length) ? e.zhCols : null;
-        const t = e.ts ? new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false }) : '';
-        const probe = cols ? cols.join(' ') : e.text;
-        const lvl = /❌|错误|失败|error|ERR/.test(probe) ? ' e'
-          : /⚠|警告|限流|被拒|降级|warn|WARN|冷却|熔断/.test(probe) ? ' w' : '';
-        if (cols) {
-          const cells = '<i>' + esc(t) + '</i>' + cols.map(c => '<i>' + esc(c) + '</i>').join('');
-          return '<span class="ln lng c' + (cols.length + 1) + lvl + '" title="' + esc(e.text) + '">' + cells + '</span>';
-        }
-        const ch = (logCh === 'all') ? '<i class="lch c-' + esc(e.ch) + '">' + ({ task: '任务', chat: '对话', sys: '系统' }[e.ch] || e.ch) + '</i>' : '';
-        const body = fitPx(e.text, box.clientWidth - 34 - (ch ? 46 : 0) - logMeasure(t + ' '));
-        return '<span class="ln' + lvl + '" title="' + esc(e.text) + '">' + esc(t) + ' ' + ch + esc(body) + '</span>';
-      }).join('')
-      : '<span style="color:var(--ink-3)">暂无日志</span>';
+    const qs = logParams();
+    const d = await api('logs' + (qs ? '?' + qs : ''));
+    logLast = d;
+    renderLogRows();
+    const s = d.stats || {};
+    let note = '成功 ' + (s.ok || 0) + ' · 警告 ' + (s.warn || 0) + ' · 失败 ' + (s.err || 0) +
+      ' · 其它 ' + (s.info || 0) + ' · 环内 ' + (s.total || 0) + ' 行';
+    if (typeof d.filtered === 'number' && d.filtered !== (s.total || 0)) {
+      note += ' · 筛出 ' + d.filtered + ' 行';
+    }
+    if (d.truncated) note += '（仅显示最新）';
+    $('logNote').textContent = note;
     if (logPin && atEnd) box.scrollTop = box.scrollHeight;
-    const counts = {};
-    for (const e of (d.entries || [])) counts[e.ch] = (counts[e.ch] || 0) + 1;
-    $('logNote').textContent = logCh === 'all'
-      ? '任务 ' + (counts.task || 0) + ' · 对话 ' + (counts.chat || 0) + ' · 系统 ' + (counts.sys || 0)
-      : (logCh === 'task' ? '任务' : logCh === 'chat' ? '对话' : '系统') + ' ' + entries.length + ' 行';
   } catch (e) { /* 概览已提示 */ }
 }
+// 点击行展开明细（对话行=字段拆解；错误行=三层诊断），再点收起。key 用时间+内容
+// 前缀，自动刷新周期内同一行的 key 不变，展开态跨刷新保留。
+$('logBox').addEventListener('click', ev => {
+  const ln = ev.target.closest('.ln');
+  if (!ln || !ln.dataset.k) return;
+  const k = ln.dataset.k;
+  if (logOpen.has(k)) logOpen.delete(k); else logOpen.add(k);
+  renderLogRows();
+});
+// 导出：拿服务端已脱敏的纯文本，按当前筛选条件走同一份判定口径。
+if ($('btnLogExport')) $('btnLogExport').onclick = async () => {
+  try {
+    const h = {};
+    const key = localStorage.getItem(LS_KEY);
+    if (key) h['Authorization'] = 'Bearer ' + key;
+    const r = await fetch('/panel/api/logs/export?' + logParams(), { headers: h });
+    if (!r.ok) throw new Error(r.status === 401 ? '密码或密钥无效' : ('HTTP ' + r.status));
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'wb-syan-logs-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('已导出（凭据已脱敏）');
+  } catch (e) { toast('导出失败：' + e.message, 'bad'); }
+};
 $('btnLogPin').onclick = () => {
   logPin = !logPin;
   $('btnLogPin').textContent = '自动滚动：' + (logPin ? '开' : '关');
@@ -1480,10 +1569,14 @@ $('cfgForm').onsubmit = async ev => {
 };
 
 /* ── 添加账号 ─────────────────────────────────────────────────────── */
-function openAdd() {
+// openAdd(target)：target 为空 = 普通「添加账号」；带 {uid, nickname} = 「原位重登」——
+// 直接落到手机号页签，并把本次登录结果钉死必须属于这个 uid（后端核验，前端只负责
+// 把 uid 带过去 + 把目标显示出来，让用户一眼看清这次改的是谁）。
+function openAdd(target) {
   $('addVeil').classList.add('on');
+  setReloginTarget(target || null);
   // 重置到登录标签
-  switchAddTab('login');
+  switchAddTab(target ? 'phone' : 'login');
   $('addPick').hidden = false;
   $('addLoad').hidden = true; $('addReady').hidden = true;
   $('addDone').hidden = true; $('addErr').hidden = true;
@@ -1544,7 +1637,7 @@ async function pollLogin() {
     $('addErr').textContent = e.message + '（关闭后重新添加）';
   }
 }
-function closeAdd() { stopPoll(); loginState = null; $('addVeil').classList.remove('on'); }
+function closeAdd() { stopPoll(); loginState = null; setReloginTarget(null); $('addVeil').classList.remove('on'); }
 $('btnCloseAdd').onclick = closeAdd;
 $('btnStartLogin').onclick = startAddLogin;
 $('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank');
@@ -1577,7 +1670,7 @@ $('importFile').onchange = async () => {
 };
 
 /* ── 顶部动作 ─────────────────────────────────────────────────────── */
-$('btnAdd').onclick = openAdd;
+$('btnAdd').onclick = () => openAdd();
 $('btnRefresh').onclick = async () => {
   const b = $('btnRefresh');
   b.disabled = true; b.textContent = '刷新中…';
@@ -3535,6 +3628,22 @@ $('grUID').onchange = () => loadGrowth(false);
    会话 sid 在这里缓存；对话框重开时会取新的（旧会话服务端 15 分钟过期）。 */
 let phSID = '';
 let phTimer = null;
+/* 原位重登的目标 uid（空 = 普通新增）。核验在后端做（phoneVerify 比对登录结果的 uid），
+   这里只负责带上期望值并把目标显示出来——前端不判断，避免「前端放过、后端拒绝」两套口径。 */
+let phExpectUID = '';
+function setReloginTarget(t) {
+  phExpectUID = (t && t.uid) ? String(t.uid) : '';
+  const box = $('phTarget');
+  if (!box) return;
+  if (!phExpectUID) { box.hidden = true; return; }
+  $('phTargetName').textContent = (t.nickname || '未命名账号');
+  $('phTargetUid').textContent = 'uid ' + phExpectUID.slice(0, 8) + '…';
+  box.hidden = false;
+  phSID = '';   // 换目标就换会话：旧会话可能已经是为另一个手机号发的码
+  $('phCode').value = '';
+  phMsg('登录结果必须属于上面这个账号；如果登进来的是别的号，网关会拒绝写入（不会新增、也不会覆盖）。');
+}
+if ($('phTargetClear')) $('phTargetClear').onclick = () => setReloginTarget(null);
 function phMsg(text, isErr) {
   const ok = $('phState'), err = $('phErr');
   ok.hidden = !text || isErr;
@@ -3583,11 +3692,18 @@ async function phVerify() {
   b.disabled = true;
   phMsg('正在登录并入库…');
   try {
+    const payload = { sid: phSID, code: code };
+    if (phExpectUID) payload.expect_uid = phExpectUID;
     const r = await api('login/phone/verify', {
-      method: 'POST', body: JSON.stringify({ sid: phSID, code: code }),
+      method: 'POST', body: JSON.stringify(payload),
     });
-    phMsg('已添加：' + (r.nickname || r.uid) + (r.credits >= 0 ? '（积分 ' + r.credits + '）' : ''));
-    toast('账号已加入号池', 'ok');
+    // 先清目标（它会写 phMsg 的提示语），再落最终的成功文案——顺序反过来，
+    // 用户看到的会是「登录结果必须属于上面这个账号」而不是「已原位重登」。
+    const inPlace = !!r.in_place;
+    const label = (r.nickname || r.uid) + (r.credits >= 0 ? '（积分 ' + r.credits + '）' : '');
+    setReloginTarget(null);
+    phMsg((inPlace ? '已原位重登：' : '已添加：') + label);
+    toast(inPlace ? '凭证已原地覆盖，账号仍在号池' : '账号已加入号池', 'ok');
     phSID = ''; $('phCode').value = ''; $('phMobile').value = '';
     clearInterval(phTimer); $('phSend').textContent = '发送验证码'; $('phSend').disabled = false;
     loadOverview(true);
