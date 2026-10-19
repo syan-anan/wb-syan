@@ -548,40 +548,73 @@ function clearNavMarks() {
   navItems().forEach(li => li.classList.remove('drop-before', 'drop-after'));
 }
 if (navUL) {
-  navUL.addEventListener('dragstart', ev => {
-    const g = ev.target.closest && ev.target.closest('.nav-grip');
-    if (!g) { ev.preventDefault(); return; }
-    navDragLi = g.parentElement;
-    navDragLi.classList.add('nav-dragging');
-    try {
-      ev.dataTransfer.effectAllowed = 'move';
-      ev.dataTransfer.setData('text/plain', navKeyOf(navDragLi));
-      ev.dataTransfer.setDragImage(navDragLi, 20, 16);
-    } catch (e) { /* 忽略 */ }
-  });
-  navUL.addEventListener('dragover', ev => {
-    if (!navDragLi) return;
-    ev.preventDefault();
-    const li = ev.target.closest && ev.target.closest('li');
+  /* 侧栏拖动改走 Pointer Events。原来用 HTML5 拖放，两个坑叠在一起：
+     1) <a> 自己默认可拖 —— 落点不在那颗 ⠿ 上时 dragstart 被 preventDefault
+        取消，表现就是「按住整行拖没反应，得对着小点试好几次」；
+     2) 浏览器有拖拽阈值和拖影快照，起步慢、跟手差。
+     现在整行都是把手（触屏仍只认 ⠿，不抢纵向滚动）：按住不动还是正常点击，
+     移动超过 4px 立刻进拖动态，落点线跟手，松手即提交。 */
+  navUL.querySelectorAll('a').forEach(n => { n.draggable = false; });
+  let navPtrId = null, navStartY = 0, navDragEndAt = 0;
+  const navVisibleItems = () => navItems().filter(li =>
+    navKeyOf(li) && !li.classList.contains('nav-hidden') && li !== navDragLi);
+  function navMarkAt(y) {
     clearNavMarks();
-    if (!li || li === navDragLi) return;
-    const r = li.getBoundingClientRect();
-    li.classList.add((ev.clientY - r.top) > r.height / 2 ? 'drop-after' : 'drop-before');
+    const list = navVisibleItems();
+    if (!list.length) return;
+    let target = list[0], after = false;
+    for (const li of list) {
+      const r = li.getBoundingClientRect();
+      if (y < r.top + r.height / 2) { target = li; after = false; break; }
+      target = li; after = true;
+    }
+    target.classList.add(after ? 'drop-after' : 'drop-before');
+  }
+  navUL.addEventListener('pointerdown', ev => {
+    const li = ev.target.closest && ev.target.closest('li');
+    if (!li || !navKeyOf(li)) return;
+    // 触屏/手写笔只在 ⠿ 上起手，其余区域留给页面滚动。
+    if (ev.pointerType !== 'mouse' && !(ev.target.closest && ev.target.closest('.nav-grip'))) return;
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    navPtrId = ev.pointerId;
+    navStartY = ev.clientY;
+    navDragLi = li;
+    try { li.setPointerCapture(ev.pointerId); } catch (e) { /* 没有这个 API 也照常跑 */ }
   });
-  navUL.addEventListener('drop', ev => { if (navDragLi) ev.preventDefault(); });
-  navUL.addEventListener('dragend', () => {
+  navUL.addEventListener('pointermove', ev => {
+    if (!navDragLi || ev.pointerId !== navPtrId) return;
+    if (!navDragLi.classList.contains('nav-dragging')) {
+      if (Math.abs(ev.clientY - navStartY) < 4) return;
+      navDragLi.classList.add('nav-dragging');
+    }
+    ev.preventDefault();
+    navMarkAt(ev.clientY);
+  });
+  function navEndDrag(ev) {
     const li = navDragLi;
-    navDragLi = null;
-    if (!li) return;
+    if (!li || ev.pointerId !== navPtrId) return;
+    navDragLi = null; navPtrId = null;
+    const dragging = li.classList.contains('nav-dragging');
     li.classList.remove('nav-dragging');
     const mark = navUL.querySelector('li.drop-before, li.drop-after');
     const after = !!(mark && mark.classList.contains('drop-after'));
     clearNavMarks();
-    if (!mark) return;
-    navUL.insertBefore(li, after ? mark.nextSibling : mark);
+    if (!dragging) return;
+    // 拖完紧跟的那一次 click 与 pointerup 属同一串手势，得吃掉；用时间窗而不是
+    // 布尔标志 —— 标志没人消费就会悬着，把用户下一次正常点击也吃掉（正是
+    // 「拖好几次才过去」那种毛病，不能自己再造一遍）。
+    navDragEndAt = Date.now();
+    if (mark) navUL.insertBefore(li, after ? mark.nextSibling : mark);
     saveNavOrder();
     renderNavSetList();
-  });
+  }
+  navUL.addEventListener('pointerup', navEndDrag);
+  navUL.addEventListener('pointercancel', navEndDrag);
+  navUL.addEventListener('click', ev => {
+    if (Date.now() - navDragEndAt > 300) return;
+    navDragEndAt = 0;
+    ev.stopPropagation();
+  }, true);
 }
 function renderNavSetList() {
   const host = $('navSetList');
@@ -1775,6 +1808,9 @@ $('btnRefresh').onclick = async () => {
 
 /* ── 轮询 ─────────────────────────────────────────────────────────── */
 function refreshVisible() {
+  // 拖动进行中绝不重画：5s 轮询会把正在拖的那一行从 DOM 里换掉，dragend
+  // 拿到的就成了脱离文档的旧节点，重排静默失败（就是「要拖好几次才过去」）。
+  if (accDragRow || navDragLi) return;
   if (view === 'accounts') loadOverview(true);
   else if (view === 'logs') loadLogs();
   else if (view === 'taskscenter') reattachQueueView();
@@ -2544,19 +2580,24 @@ function renderUsageChart(series) {
 
   const t0 = pts[0].t;
   const t1 = pts[pts.length - 1].t;
-  const span = Math.max(1, t1 - t0);
+  const span = t1 - t0;
 
   const max = Math.max(1, ...pts.map(p => p.tt));
 
-  // 柱宽取「最小真实间隔」的 70%，并夹在合理区间内——窗口拉到 30 天时柱子会
+  // 柱宽取「最小真实间隔」的 70%，并夹在合理区间内 —— 窗口拉到 30 天时柱子会
   // 变细，但不会细到看不见。
   let minGap = Infinity;
   for (let i = 1; i < pts.length; i++) minGap = Math.min(minGap, pts[i].t - pts[i - 1].t);
-  if (!isFinite(minGap) || minGap <= 0) minGap = span;
-  const slot = iw * (minGap / span);
+  // step = 一个柱位的时间宽度。原来域两端不留白：单点（或几个同一时刻的桶）
+  // 时 span 退化成 1ms，第一根柱子正好压在 x=PL 上，把 y 轴的 9.14M/6.86M
+  // 那几个刻度糊成一团。现在两端各让半个柱位，点少的时候图自己往中间收。
+  let step = pts.length > 1 ? Math.max(minGap, span / (pts.length - 1)) : 1;
+  if (!(step > 0)) step = 1;
+  const dspan = Math.max(1, span + step);
+  const d0 = t0 - step / 2;
+  const xOf = t => PL + (t - d0) / dspan * iw;
+  const slot = iw * (step / dspan);
   const bw = Math.max(1.5, Math.min(30, slot * 0.7));
-
-  const xOf = t => PL + (t - t0) / span * iw;
 
   let out = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" ' +
             'preserveAspectRatio="xMidYMid meet">';

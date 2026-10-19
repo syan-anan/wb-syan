@@ -1092,10 +1092,13 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
             <input type="text" id="usStart" class="xs sy-date" placeholder="开始日期" title="起始日期（含当天）；填了就按区间查，不填用上面的滚动窗口" autocomplete="off">
             <span class="us-arrow">→</span>
             <input type="text" id="usEnd" class="xs sy-date" placeholder="结束日期" title="结束日期（含当天）" autocomplete="off">
-            <button class="xs" id="btnUsRange" title="按上面的起止日期查询（含结束当天）">区间查询</button>
-            <button class="xs ghost" id="btnUsRangeClear" title="清除日期，回到左边的滚动窗口">清除</button>
-          </span>
-          <button class="xs" id="btnUsage">刷新</button>
+            <span class="us-btns">
+              <button class="xs" id="btnUsRange" title="按上面的起止日期查询（含结束当天）">区间查询</button>
+              <span class="us-btns2">
+                <button class="xs ghost" id="btnUsRangeClear" title="清除日期，回到左边的滚动窗口">清除</button>
+                <button class="xs" id="btnUsage">刷新</button>
+              </span>
+            </span>
         </header>
         <div class="stats" id="usStats"></div>
         <div class="pad">
