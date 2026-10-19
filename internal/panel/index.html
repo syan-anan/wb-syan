@@ -667,6 +667,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#usage" data-view="usage">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13.5h12"/><path d="M4.5 13.5V8.2M8 13.5V3.5M11.5 13.5v-3"/></svg>
         用量</a></li>
+      <li><a href="#journal" data-view="journal">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.2h10M3 8h10M3 12.8h6"/><circle cx="12.2" cy="12.4" r="2.2"/></svg>
+        积分流水</a></li>
       <li><a href="#packages" data-view="packages">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.2 5.4 8 2.5l5.8 2.9v5.2L8 13.5l-5.8-2.9z"/><path d="M2.2 5.4 8 8.3l5.8-2.9M8 8.3v5.2"/></svg>
         积分构成</a></li>
@@ -688,6 +691,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#config" data-view="config">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>
         配置</a></li>
+       <li><a href="#maint" data-view="maint">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2v6.4M5.4 6.2 8 8.6l2.6-2.4"/><path d="M2.6 11.2h10.8v2.6H2.6z"/></svg>
+        更新与备份</a></li>
        <li><a href="#diagnose" data-view="diagnose">
          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2 14.2 13H1.8z"/><path d="M8 6.3v3.2M8 11.3v.2"/></svg>
          错误诊断</a></li>
@@ -944,6 +950,13 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 
     <!-- 积分构成 -->
     <section class="view" id="view-packages" hidden>
+      <!-- 与账号池同一份 overview 数据（#9）：这页最常看的就是「号还活着几个」。 -->
+      <div class="stats pk-stats">
+        <div class="stat"><div class="v" id="pkTotal">-</div><div class="k">账号总数</div></div>
+        <div class="stat good"><div class="v" id="pkHealthy">-</div><div class="k">可用</div></div>
+        <div class="stat warn"><div class="v" id="pkCooling">-</div><div class="k">冷却中</div></div>
+        <div class="stat bad"><div class="v" id="pkDisabled">-</div><div class="k">已禁用</div></div>
+      </div>
       <!-- 筛选：域（国内/国际）+ 账号。留空 = 全部，可多选；
            下方三块（到期分布 / 账号对比 / 逐包明细）全部按此筛选后的账号集合渲染。 -->
       <div class="filterbar">
@@ -980,6 +993,87 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <div id="pkDetail"></div>
     </section>
 
+    <!-- 积分流水：确认事件与余额观察两套账，分别列、分别小计，不相加 -->
+    <section class="view" id="view-journal" hidden>
+      <div class="box">
+        <header>
+          <h3>积分流水 <span class="hint">任务奖励 / 每日权益按发放事件记；余额刷新按观测记</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="jnNote">—</span>
+          <select id="jnKind" class="xs">
+            <option value="">全部类型</option>
+            <option value="confirmed">仅确认事件</option>
+            <option value="observed">仅余额观察</option>
+          </select>
+          <select id="jnAcct" class="xs"><option value="">全部账号</option></select>
+          <select id="jnSrc" class="xs"><option value="">全部来源</option></select>
+          <select id="jnSize" class="xs">
+            <option value="25">25 条/页</option>
+            <option value="50" selected>50 条/页</option>
+            <option value="100">100 条/页</option>
+            <option value="200">200 条/页</option>
+          </select>
+        </header>
+        <div class="filterbar jn-filter">
+          <span class="lb">日期</span>
+          <input type="text" id="jnStart" class="xs sy-date" placeholder="开始日期" autocomplete="off">
+          <span class="us-arrow">→</span>
+          <input type="text" id="jnEnd" class="xs sy-date" placeholder="结束日期" autocomplete="off">
+          <button class="xs" id="btnJn">查询</button>
+          <button class="xs ghost" id="btnJnClear">重置</button>
+          <span class="grow"></span>
+          <span class="note">两套账存在重叠：一笔奖励会先进「确认事件」，余额刷新后再进「余额观察」，所以这里不给合计数。</span>
+        </div>
+        <div class="stats" id="jnStats"></div>
+        <div class="tbl-wrap">
+          <table class="acc md">
+            <thead><tr><th class="mark" aria-hidden="true"></th><th class="num">时间</th><th>账号</th><th>类型</th><th>来源</th><th class="num">积分变化</th><th class="num">变更后余额</th></tr></thead>
+            <tbody id="jnBody"></tbody>
+          </table>
+        </div>
+        <div class="pad jn-pager" id="jnPager"></div>
+      </div>
+    </section>
+
+    <!-- 更新与备份：整库导出 / 还原 + 升级命令 -->
+    <section class="view" id="view-maint" hidden>
+      <div class="box">
+        <header>
+          <h3>版本 <span class="hint">只读 GitHub 公开接口，不产生额外出网请求</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="mtPath"></span>
+          <button class="xs" id="btnMtReload">刷新</button>
+        </header>
+        <div class="pad"><div class="mt-ver" id="mtVer">—</div></div>
+      </div>
+      <div class="box">
+        <header><h3>升级命令 <span class="hint">在宿主机执行；容器内没有 docker</span></h3></header>
+        <div class="pad"><div class="mt-cmds" id="mtCmds"></div></div>
+      </div>
+      <div class="box">
+        <header>
+          <h3>整库备份 / 还原 <span class="hint">config + state + usage + 流水 + 凭证，一个 zip</span></h3>
+          <span class="grow"></span>
+          <span class="note">备份包含登录凭证，请按机密文件保管</span>
+        </header>
+        <div class="pad mt-db">
+          <div class="mt-row">
+            <button class="xs primary" id="btnDbBackup">下载整库备份（zip）</button>
+            <span class="note">打包前先把用量与流水落盘，拿到的是此刻的状态。</span>
+          </div>
+          <div class="mt-row">
+            <input type="file" id="dbRestoreFile" accept=".zip">
+            <button class="xs danger" id="btnDbRestore">上传并还原</button>
+          </div>
+          <div id="mtRestore"></div>
+        </div>
+      </div>
+      <div class="box">
+        <header><h3>说明</h3></header>
+        <div class="pad"><div class="mt-notes" id="mtNote"></div></div>
+      </div>
+    </section>
+
     <!-- 用量 -->
     <section class="view" id="view-usage" hidden>
       <div class="box">
@@ -994,6 +1088,13 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
             <option value="720">近 30 天</option>
             <option value="0">全部历史</option>
           </select>
+          <span class="us-range">
+            <input type="text" id="usStart" class="xs sy-date" placeholder="开始日期" title="起始日期（含当天）；填了就按区间查，不填用上面的滚动窗口" autocomplete="off">
+            <span class="us-arrow">→</span>
+            <input type="text" id="usEnd" class="xs sy-date" placeholder="结束日期" title="结束日期（含当天）" autocomplete="off">
+            <button class="xs" id="btnUsRange" title="按上面的起止日期查询（含结束当天）">区间查询</button>
+            <button class="xs ghost" id="btnUsRangeClear" title="清除日期，回到左边的滚动窗口">清除</button>
+          </span>
           <button class="xs" id="btnUsage">刷新</button>
         </header>
         <div class="stats" id="usStats"></div>
@@ -1531,7 +1632,12 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <!-- 导入 JSON -->
       <div id="addTabImport" class="tab-panel" hidden>
         <div class="hint" style="margin-bottom:8px">选择 cockpit tools 导出的 JSON 文件，批量导入账号。文件需为账号数组格式。</div>
-        <input type="file" id="importFile" accept=".json" style="margin-bottom:8px">
+        <input type="file" id="importFile" multiple style="margin-bottom:8px">
+        <div class="hint" style="margin:6px 0 10px">支持 cockpit 导出的 JSON 数组，以及客户端 <b>.info</b> / <b>.jsonl</b> 和旧版升级留下的 <b>.info.bak-*</b> 备份文件。</div>
+        <input type="file" id="importInfoFile" multiple style="margin-bottom:8px">
+        <div class="hint" style="margin-bottom:6px">第二个框走「凭证导入」：可多选，逐个提交，单条失败不影响其它条目。</div>
+        <div id="importInfoDone" class="state ok" hidden></div>
+        <div id="importInfoErr" class="state err" hidden></div>
         <div id="importDone" class="state ok" hidden></div>
         <div id="importErr" class="state err" hidden></div>
       </div>

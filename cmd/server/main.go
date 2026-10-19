@@ -35,7 +35,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.19.6-panel"
+const appVersion = "1.19.7-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -261,6 +261,15 @@ func main() {
 	rec.Start()
 	defer rec.Stop()
 	log.Printf("[usage] 逐请求用量记录已启用: %s (%s)", usagePath, rec.Describe())
+	// 积分流水：与 state 文件同目录的 journal.json（30s 防抖落盘 + 退出保存）。
+	// 余额钩子挂在池上：所有余额写入点（手动刷新 / 定时签到 / 解冻）自动记 observed；
+	// 任务奖励与每日权益由面板在领取成功后记 confirmed（两套账，不可相加）。
+	journalPath := stateSibling(cfg.StateFile, "journal.json")
+	jn := panel.NewJournal(journalPath)
+	jn.Start()
+	defer jn.Stop()
+	p.SetCreditsHook(jn.OnBalanceChange)
+	log.Printf("[journal] 积分流水已启用: %s", journalPath)
 
 	// 子密钥配额计数器：每时/每日请求数，独立文件落盘（与 state 文件同目录），
 	// 后台 15s 一把 + 退出前 Flush。面板与 /v1/* 共用同一个实例。
@@ -275,9 +284,14 @@ func main() {
 	var qoderClient *upstream.QoderPool
 	qoderHistPath := filepath.Join("data", "qoder_checkin.json")
 
+	// statusFn 先声明、后赋值：面板比 handler 先构建，闭包捕获的是变量本身，
+	// handler 建好后接上即可（同 qoderClient 的处理方式）。
+	var statusFn func() map[string]any
+
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
+		Journal:     jn,
 		Upstream:    up,
 		Scheduler:   sch,
 		AuthDir:     cfg.AuthDir,
@@ -293,6 +307,17 @@ func main() {
 		// 与 state 文件同目录，缺省 data/output_probes.json。
 		ProbeFile:  stateSibling(cfg.StateFile, "output_probes.json"),
 		ConfigPath: *cfgPath,
+		StateFile:  cfg.StateFile,
+		DeployDir:  os.Getenv("WBSY_DEPLOY_DIR"),
+		// 上游与路由快照（面板凭据）。数据面 /status 认网关密钥，面板拿不到，
+		// 故由 main 把 handler 的方法递进来；handler 尚未构建时返回 nil，
+		// 面板侧回 501，前端会明确提示读不到。
+		StatusSummary: func() map[string]any {
+			if statusFn == nil {
+				return nil
+			}
+			return statusFn()
+		},
 		LoadConfig: func() (any, error) {
 			return Load(*cfgPath)
 		},
@@ -419,6 +444,9 @@ func main() {
 		// 出口保护：WAF IP 级拦截时同步置位（wafip.go），供后台任务顺延。
 		WAF: wafGuard,
 	})
+
+	// 接上面板：/panel/api/status 从此有真数据（闭包捕获，无顺序依赖）。
+	statusFn = h.StatusSummary
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -221,10 +221,19 @@ func growthTaskComplete(t upstream.Task) bool {
 }
 
 func (p *Panel) claimGrowthReward(a *auth.Auth, code string) (int64, int64, error) {
+	var credit, energy int64
+	var err error
 	if isMPTaskCode(code) {
-		return p.cfg.Upstream.ClaimRewardMP(a, code)
+		credit, energy, err = p.cfg.Upstream.ClaimRewardMP(a, code)
+	} else {
+		credit, energy, err = p.cfg.Upstream.ClaimReward(a, code)
 	}
-	return p.cfg.Upstream.ClaimReward(a, code)
+	if err == nil && credit > 0 && p.cfg.Journal != nil {
+		// 同一任务每天只能领一次：日期做幂等键，重试不会把同一笔奖励记两遍。
+		p.cfg.Journal.RecordConfirmed(a.UID, "任务奖励 "+code, credit,
+			"growth|"+a.UID+"|"+code+"|"+time.Now().Format("2006-01-02"))
+	}
+	return credit, energy, err
 }
 
 func growthRewardMessage(credit, energy int64) string {

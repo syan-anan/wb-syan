@@ -54,20 +54,20 @@ type bucket struct {
 	Model string `json:"m"`
 	// Client 调用方客户端标签（识别不到时形如 "未识别: <UA首段>"）。
 	// 维度加在 model 之后：同一个模型可能被多个客户端调用，分开才看得清。
-	Client string  `json:"cl"`
+	Client string `json:"cl"`
 	// Group 调用方密钥的分组标签（keys.Entry.Group）。空 = 未分组。
 	// 单独一维而不是拼进 Client：分组的用途是按客户对账，和"用什么客户端"
 	// 是两个正交问题，拼在一起以后想拆就拆不开了。
 	Group string  `json:"g,omitempty"`
-	Req    int64   `json:"q"`  // 请求数（含失败）
-	Err    int64   `json:"e"`  // 失败数
-	PT     int64   `json:"p"`  // prompt tokens
-	CT     int64   `json:"c"`  // completion tokens
-	TT     int64   `json:"t"`  // total tokens（上游给什么用什么的合计）
-	LatMs  int64   `json:"l"`  // 延迟累计（ms）
-	LatN   int64   `json:"ln"` // 延迟样本数
-	TPS    float64 `json:"v"`  // 吐字速率累计
-	TPSN   int64   `json:"vn"` // 速率样本数
+	Req   int64   `json:"q"`  // 请求数（含失败）
+	Err   int64   `json:"e"`  // 失败数
+	PT    int64   `json:"p"`  // prompt tokens
+	CT    int64   `json:"c"`  // completion tokens
+	TT    int64   `json:"t"`  // total tokens（上游给什么用什么的合计）
+	LatMs int64   `json:"l"`  // 延迟累计（ms）
+	LatN  int64   `json:"ln"` // 延迟样本数
+	TPS   float64 `json:"v"`  // 吐字速率累计
+	TPSN  int64   `json:"vn"` // 速率样本数
 	// Cr 逐请求实测消耗的积分合计（上游 usage.credit 累加，可为小数）。
 	// CrN 是有成本观测的请求数：用来区分「窗口内没有观测」（CrN=0 → 前端显示
 	// 「—」）与「观测到 0 消耗」（免费模型：CrN>0 且 Cr=0）。
@@ -454,7 +454,7 @@ type Snapshot struct {
 	ByAccount []KeyedAgg `json:"by_account"`
 	ByModel   []KeyedAgg `json:"by_model"`
 	// ByClient 按调用方客户端聚合（Codex / Claude Code / WorkBuddy / 未识别…）。
-	ByClient  []KeyedAgg `json:"by_client"`
+	ByClient []KeyedAgg `json:"by_client"`
 	// ByGroup 按调用方密钥分组聚合（keys.Entry.Group）。空分组归为 "(未分组)"。
 	ByGroup   []KeyedAgg `json:"by_group"`
 	Series    []Point    `json:"series"`
@@ -475,12 +475,31 @@ type Snapshot struct {
 //
 // nicks 是 uid→昵称映射，仅用于展示。
 func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
+	if hours > 24*60 {
+		hours = 24 * 60
+	}
+	if hours > 0 {
+		// 窗口 = [当前整点-(hours-1) 小时, 无上界)，与改造前的滚动口径逐字一致。
+		from := time.Now().Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
+		return r.SnapshotWindow(from, time.Time{}, true, nicks)
+	}
+	// hours<=0：全部历史（含 90 天前折叠出的日桶）。
+	return r.SnapshotWindow(time.Time{}, time.Time{}, false, nicks)
+}
+
+// SnapshotWindow 聚合显式区间 [from, to] 内的桶（to 为零值 = 不设上界）。
+//
+// 与 Snapshot 的分工：那个负责滚动窗口（面板的「近 24 小时 / 近 3 天」），
+// 本方法负责显式起止日期（对齐上游 1.0.9 stats._time_filters）。两者共用同一段
+// 桶过滤与聚合代码——这是「卡片数字和图对不上」这类口径漂移的唯一结构性解法：
+// 口径只有一份实现，不存在两份各写各的机会。
+//
+// from/to 按**本地墙钟**传入，与桶 scope 的解析口径一致（hourLayout/dayLayout
+// 都用 ParseInLocation + time.Local）：小时桶按自己的整点起点判、日桶按日起点判，
+// 落在区间内即计入。windowed=false 时完全不过滤（全部历史）。
+func (r *Recorder) SnapshotWindow(from, to time.Time, windowed bool, nicks map[string]string) Snapshot {
 	if r == nil {
 		return Snapshot{Generated: time.Now().Format(time.RFC3339)}
-	}
-	windowed := hours > 0
-	if windowed && hours > 24*60 {
-		hours = 24 * 60
 	}
 
 	r.mu.Lock()
@@ -500,12 +519,6 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 	hourSeries := map[string]*aggAcc{}
 	daySeries := map[string]*aggAcc{}
 
-	var hourFrom time.Time
-	if windowed {
-		nowHour := time.Now().Truncate(time.Hour)
-		hourFrom = nowHour.Add(-time.Duration(hours-1) * time.Hour)
-	}
-
 	// 数据起点（全库最早分片）：不受窗口影响，表示"记录自何时开始"。scope 字典序
 	// 即时间序（同前缀内同格式排序；"d:" 恒早于 "h:"——日桶只来自 90 天前的小时折叠）。
 	since := ""
@@ -524,7 +537,7 @@ func (r *Recorder) Snapshot(hours int, nicks map[string]string) Snapshot {
 				ts, err = time.ParseInLocation(dayLayout, strings.TrimPrefix(b.Scope, "d:"), time.Local)
 			}
 			// 解析失败的脏桶不进窗口聚合（也不该出现在任何口径里）。
-			if err != nil || ts.Before(hourFrom) {
+			if err != nil || ts.Before(from) || (!to.IsZero() && ts.After(to)) {
 				continue
 			}
 		}

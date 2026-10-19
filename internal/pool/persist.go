@@ -152,9 +152,12 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			errTotal = int64(s.ErrCount)
 		}
 		e := &entry{
-			a:                        &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
-			addedAt:                  s.AddedAt,
-			credits:                  s.Credits,
+			a:       &auth.Auth{UID: uid}, // placeholder，Add 时会换成完整凭证
+			addedAt: s.AddedAt,
+			credits: s.Credits,
+			// 从 state.json 恢复 = 早就认识这个号，基线成立；
+			// 重启后第一次真实余额刷新照常进流水。
+			creditsBaseline:          true,
 			creditsTotal:             s.CreditsTotal,
 			creditsExpiring:          s.CreditsExpiring,
 			creditsEarliestExpiry:    s.CreditsEarliestExpiry,
@@ -172,6 +175,7 @@ func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 			sessionDeadFails:         s.SessionDeadFails,
 			consecutiveFails:         s.ConsecutiveFails,
 			priority:                 s.Priority,
+			maxInFlight:              s.MaxInFlight,
 		}
 		// 到期快照按当前时刻惰性清洗：已过期、零剩余或超出总余额的脏数据不恢复。
 		if e.creditsExpiring < 0 {
@@ -311,6 +315,7 @@ func (p *Pool) stateOverviewLocked() stateFile {
 			SessionDeadFails:         e.sessionDeadFails,
 			ConsecutiveFails:         e.consecutiveFails,
 			Priority:                 e.priority,
+			MaxInFlight:              e.maxInFlight,
 			CreditsExpiring:          e.creditsExpiring,
 			CreditsEarliestExpiry:    e.creditsEarliestExpiry,
 			CreditsEarliestRemaining: e.creditsEarliestRemaining,

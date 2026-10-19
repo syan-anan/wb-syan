@@ -78,7 +78,7 @@ func (p *Panel) backupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
+		"ok":   true,
 		"note": "配置已恢复；部分字段需要重启进程才能生效",
 	})
 }

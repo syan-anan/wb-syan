@@ -68,7 +68,7 @@ func (p *Pool) disableLocked(e *entry, reason string) {
 // 不动熔断器（fails/retryCount/breakerUntil）——签到成功只证明余额恢复与
 // billing 通道健康，不证明 chat 通道健康。调用方必须已持有 p.mu。
 func (p *Pool) reviveCoolingLocked(e *entry, credits, total int64) {
-	e.credits = credits
+	p.setCreditsLocked(e, credits)
 	e.creditsTotal = total
 	if e.coolKind == CoolHard {
 		e.until = time.Time{}

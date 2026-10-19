@@ -107,7 +107,7 @@ func (p *Pool) ReenableIfCredits(uid string, remain, total int64) {
 		if remain > 0 && !e.disabled {
 			p.reviveCoolingLocked(e, remain, total)
 		} else {
-			e.credits = remain
+			p.setCreditsLocked(e, remain)
 			e.creditsTotal = total
 		}
 		// ReenableIfCredits 只有聚合余额上下文；到期明细必须由 SetCreditsDetailed
@@ -516,6 +516,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		RateLimitedModels:        p.rateLimitedModelsLocked(e, now),
 		AddedAt:                  e.addedAt,
 		Priority:                 e.priority,
+		MaxInFlight:              e.maxInFlight,
 		Realm:                    e.a.Realm(),
 		Nickname:                 e.a.Nickname,
 		Credits:                  e.credits,

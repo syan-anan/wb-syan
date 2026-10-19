@@ -53,6 +53,9 @@ type Pool struct {
 	// maxInFlightGlobal global 域单账号在途上限分档（WAF 403 修复 P1-1：global 域
 	// WAF 风控更紧，压低并发）；0 = 未设置，回落 maxInFlight（不分档，零回归）。
 	maxInFlightGlobal int
+	// creditsHook 余额变更回调（面板积分流水用）；nil = 不发事件。
+	// 在 p.mu 持有期间调用，实现必须是纯内存操作（见 credits_hook.go）。
+	creditsHook CreditsChangeFunc
 	// randInt64N 仅供测试注入确定性随机源；nil 时用 math/rand/v2 全局源。
 	// 生产代码不应设置此字段。
 	randInt64N func(n int64) int64
@@ -216,9 +219,16 @@ func (p *Pool) SetMaxInFlightGlobal(n int) {
 	}
 }
 
-// inFlightLimit 报告账号的生效在途上限（global 分档优先，回落 maxInFlight）；
-// 0 = 不限。调用方需已持 p.mu（或快照过 limit，见 Acquire）。
+// inFlightLimit 报告账号的生效在途上限；0 = 不限。调用方需已持 p.mu（或快照过
+// limit，见 Acquire）。优先级：账号级覆盖 > global 域分档 > 全局。
+//
+// 账号级覆盖（e.maxInFlight，面板逐账号设置）非 nil 时**完全接管**该号：不再叠加
+// global 分档——「这个号只跑 1 路」是运维对该号的明确判断，域级分档不该反过来放大
+// 它（对齐上游 1.0.9 pool.limit_for 的语义：账号值 if not None else 全局）。
 func (p *Pool) inFlightLimit(e *entry) int {
+	if e.maxInFlight != nil {
+		return *e.maxInFlight
+	}
 	if p.maxInFlightGlobal > 0 && e.a.Realm() == "global" {
 		return p.maxInFlightGlobal
 	}

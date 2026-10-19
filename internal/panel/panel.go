@@ -62,6 +62,14 @@ type Config struct {
 	// LoadConfig 返回解析后的配置对象（前端展示/校验用，具体类型由 main 注入的闭包决定）；
 	// nil 时配置页返回 501。
 	ConfigPath string
+	// StateFile 账号池持久化文件（整库备份 / 还原用）。
+	StateFile string
+	// StatusSummary 上游与路由快照（面板「模型与档位」页的路由卡）。
+	// 由 main 注入 server.Handler.StatusSummary 的闭包：这份数据属数据面，
+	// 面板不能拿自己的凭据去敲 /status，只能由服务端内部递过来。nil = 接口 501。
+	StatusSummary func() map[string]any
+	// DeployDir 宿主机部署目录（升级命令页展示）；空 = /root/workbuddy2api。
+	DeployDir  string
 	LoadConfig func() (any, error)
 	// SaveConfig 校验并落盘配置，返回需要重启才能生效的字段列表；随后由 main 注入的
 	// ApplyConfig 闭包完成热生效（池参数/排程/密钥/脱敏）。error 时配置不写盘。
@@ -105,6 +113,10 @@ type Config struct {
 
 	// Usage 逐请求用量记录器（nil = 用量接口返回 501）。
 	Usage *usage.Recorder
+
+	// Journal 积分流水（任务奖励 / 每日权益 = confirmed，余额变化 = observed）。
+	// nil = 流水接口返回 501（测试构造的 Config 不装配）。
+	Journal *Journal
 
 	// ProbeFile 模型输出上限探测结果文件（scripts/probe_max_tokens.py --panel-out
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
@@ -246,6 +258,8 @@ func (p *Panel) routes() {
 	// 语义与边界见 internal/pool/priority.go。
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/order", p.withAuth(p.accountOrder))
 	p.mux.HandleFunc("POST /panel/api/accounts/reorder", p.withAuth(p.accountsReorder))
+	// 账号级在途上限：逐号覆盖池级 max_in_flight（三态 null/0/N，见 inflight.go）。
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/inflight", p.withAuth(p.accountInFlight))
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withAuth(p.accountTaskAccept))
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withAuth(p.taskAcceptAll))
@@ -277,6 +291,10 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_stats", p.withAuth(p.modelStats))
 	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
+	// 积分流水（两套账：确认事件 / 余额观察，见 journal.go）。
+	p.mux.HandleFunc("GET /panel/api/journal", p.withAuth(p.journal))
+	// 上游与路由快照（面板凭据，见 server.Handler.StatusSummary 的说明）。
+	p.mux.HandleFunc("GET /panel/api/status", p.withAuth(p.panelStatus))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
 	// 子密钥管理（分流）：可新建 key 并绑定指定账号。仅面板凭据可访问——
@@ -296,6 +314,11 @@ func (p *Panel) routes() {
 	// 配置备份列表与恢复（写盘前自动备份，见 cmd/server/backup.go）。
 	p.mux.HandleFunc("GET /panel/api/backups", p.withAuth(p.backupsList))
 	p.mux.HandleFunc("POST /panel/api/backups/restore", p.withAuth(p.backupRestore))
+	// 整库备份 / 还原 / 升级命令（见 backupdb.go）：zip 流式下载，临时文件即删。
+	p.mux.HandleFunc("GET /panel/api/maintenance/db_backup", p.withAuth(p.dbBackup))
+	p.mux.HandleFunc("POST /panel/api/maintenance/db_backup", p.withAuth(p.dbBackup))
+	p.mux.HandleFunc("POST /panel/api/maintenance/db_restore", p.withAuth(p.dbRestore))
+	p.mux.HandleFunc("GET /panel/api/maintenance/commands", p.withAuth(p.maintenanceCommands))
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
@@ -756,22 +779,36 @@ func (p *Panel) balanceAll(w http.ResponseWriter, r *http.Request) {
 // helpers
 // ---------------------------------------------------------------------------
 
-// usage 返回逐请求用量聚合。hours 查询参数控制统计窗口（默认 72，上限 1440=60
-// 天）：卡片汇总/按域/按账号/按模型/时序**全部**按该窗口统计。显式 hours=0 表示
-// 全部历史（含 90 天前折叠出的日桶，看长期趋势）。
+// usage 返回逐请求用量聚合。统计范围有两种给法，互斥（显式区间优先）：
+//   - hours：滚动窗口（默认 72，上限 1440=60 天；hours=0 = 全部历史）。
+//     卡片汇总/按域/按账号/按模型/时序**全部**按该窗口统计。
+//   - start / end：显式起止日期（YYYY-MM-DD，含结束当天；也收 RFC3339）。
+//     给了这两个参数就不再算滚动窗口，且响应里的 range 字段回显实际区间
+//     （前端据此把「近 3 天」这类标签换成日期区间，不让用户猜当前口径）。
+//
+// 两条路径共用 usage 的同一份聚合实现，见 SnapshotWindow 的注释。
 func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Usage == nil {
 		writeErr(w, http.StatusNotImplemented, "usage recorder not available")
 		return
 	}
-	hours := 72
-	if v := r.URL.Query().Get("hours"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			hours = n
-		}
+	q := r.URL.Query()
+	// 显式起止日期优先：给了 start/end 就不再算滚动窗口（两者互斥，不叠加）。
+	from, to, ranged, rerr := usageRange(q)
+	if rerr != nil {
+		writeErr(w, http.StatusBadRequest, rerr.Error())
+		return
 	}
-	if hours > 1440 {
-		hours = 1440
+	hours := 72
+	if !ranged {
+		if v := q.Get("hours"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				hours = n
+			}
+		}
+		if hours > 1440 {
+			hours = 1440
+		}
 	}
 	// 昵称取自池快照（不含任何凭证）。积分有两个口径，都透出给前端：
 	//   - 窗口口径：逐请求实测消耗（上游 usage.credit）按桶累加，随 hours 变化，
@@ -808,7 +845,11 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 		creditPoolTotal += used
 		creditByAcct[s.UID] = used
 	}
+	// 同一份桶过滤 + 聚合，只是窗口来源不同（见 usage_range.go / SnapshotWindow）。
 	snap := p.cfg.Usage.Snapshot(hours, nicks)
+	if ranged {
+		snap = p.cfg.Usage.SnapshotWindow(from, to, true, nicks)
+	}
 	writeJSON(w, http.StatusOK, usageResponse{
 		Snapshot:             snap,
 		CreditUsedTotal:      snap.Totals.Credits,
@@ -816,6 +857,9 @@ func (p *Panel) usage(w http.ResponseWriter, r *http.Request) {
 		CreditUsedByAccount:  creditByAcct,
 		DisabledCreditsUsed:  disabledCreditsUsed,
 		DisabledAccountCount: disabledAccounts,
+		Window:               windowLabel(ranged, hours),
+		Start:                formatRangeBound(from),
+		End:                  formatRangeBound(to),
 	})
 }
 
@@ -856,6 +900,13 @@ type usageResponse struct {
 	DisabledCreditsUsed int64 `json:"disabled_credits_used"`
 	// DisabledAccountCount 被排除出主口径的禁用账号数。
 	DisabledAccountCount int `json:"disabled_account_count"`
+	// Window 本次统计的实际范围标签：rolling = 滚动窗口（hours 生效），
+	// custom = 显式起止日期。前端用它决定右上标签写「近 3 天」还是「10-01 → 10-19」。
+	Window string `json:"window"`
+	// Start / End 显式区间的回显（RFC3339，本地时区）；未设界时为空串。
+	// 回显而不是让前端自己算：口径由服务端说了算，避免两端各拼一次日期产生偏差。
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
 	// CreditUsedByAccount 同一累计口径的逐账号拆分（uid → 已用积分）。只含额度
 	// 已知的账号；额度未知（CreditsTotal=0）的账号不出现，前端显示「—」。
 	CreditUsedByAccount map[string]int64 `json:"credit_used_by_account"`

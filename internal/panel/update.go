@@ -46,6 +46,7 @@ type updateInfo struct {
 	Current   string `json:"current"`              // 本进程版本（appVersion）
 	Latest    string `json:"latest,omitempty"`     // GitHub 上最新 tag（未取到为空）
 	HasUpdate bool   `json:"has_update"`           // latest 比 current 新
+	Ahead     bool   `json:"ahead"`                // current 比 latest 新（本地是更新的 fork 版）
 	URL       string `json:"url,omitempty"`        // 发布页/标签页
 	CheckedAt string `json:"checked_at,omitempty"` // 上次检查完成时间（RFC3339）
 	Error     string `json:"error,omitempty"`      // 最近一次失败原因（面板不展示，排障用）
@@ -135,6 +136,8 @@ func (u *updater) refresh() {
 		Current:   u.current,
 		Latest:    latest,
 		HasUpdate: versionNewer(latest, u.current),
+		// 两侧都解析得出来才谈"谁更新"；任一侧解析失败一律 false（宁可不说）。
+		Ahead:     versionNewer(u.current, latest),
 		URL:       url,
 		CheckedAt: u.checked.Format(time.RFC3339),
 		Enabled:   true,

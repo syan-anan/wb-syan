@@ -268,3 +268,36 @@ func TestPanelUpdateEndpoint(t *testing.T) {
 		t.Errorf("无凭据应 401，得到 %d", rec.Code)
 	}
 }
+
+// TestUpdaterMarksLocalAsAhead fork 常态：本地版本比线上最新发布还新。
+// 这时 has_update 必须为 false（不能催用户去降级），ahead 为 true，
+// 面板才敢显示「本地版本更新」而不是含糊的「未知」。
+func TestUpdaterMarksLocalAsAhead(t *testing.T) {
+	srv, _ := updateStub(t, http.StatusOK, "v1.0.0", nil, http.StatusOK)
+	u := newUpdater(true, "1.19.7-panel", "o/r")
+	u.base = srv.URL
+	u.refresh()
+
+	info := u.snapshot()
+	if info.HasUpdate {
+		t.Fatal("线上更旧时不该报有更新（那是在催用户降级）")
+	}
+	if !info.Ahead {
+		t.Fatalf("本地更新时 ahead 应为 true：%+v", info)
+	}
+	if info.Latest != "v1.0.0" {
+		t.Fatalf("latest=%q", info.Latest)
+	}
+}
+
+// TestUpdaterAheadFalseWhenUnparsable 任一侧解析不出来：两个方向都不许下判断。
+func TestUpdaterAheadFalseWhenUnparsable(t *testing.T) {
+	srv, _ := updateStub(t, http.StatusOK, "nightly", nil, http.StatusOK)
+	u := newUpdater(true, "1.19.7-panel", "o/r")
+	u.base = srv.URL
+	u.refresh()
+	info := u.snapshot()
+	if info.HasUpdate || info.Ahead {
+		t.Fatalf("解析失败时不许猜方向：%+v", info)
+	}
+}

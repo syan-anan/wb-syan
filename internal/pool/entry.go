@@ -92,7 +92,11 @@ type Status struct {
 	// 「手动档」，优先于全部自动策略（成本分层 / 最早到期 / 加权随机 / 闲置补偿）
 	// 参与选号；健康、冷却、在途上限、独占绑定、模型冷却等硬过滤照常生效。
 	// 0 = 未手动干预（默认）。面板 ↑↓ 调整，落盘省略零值。
-	Priority        int        `json:"priority,omitempty"`
+	Priority int `json:"priority,omitempty"`
+	// MaxInFlight 账号级在途上限覆盖（面板逐号设置，对齐上游 1.0.9）：
+	// nil = 跟随全局（含 global 域分档），0 = 不限，正整数 = 该号自己的上限。
+	// 必须是指针——0 是合法值，int+omitempty 会把「不限」和「未设置」压成同一个数。
+	MaxInFlight     *int       `json:"max_in_flight,omitempty"`
 	Disabled        bool       `json:"disabled"`
 	DisabledReason  string     `json:"disabled_reason,omitempty"` // 仅 disabled 账号：禁用原因（运维可见）
 	SuccessCount    int64      `json:"success_count,omitempty"`
@@ -172,10 +176,13 @@ type modelCostEntry struct {
 	Samples   int
 }
 type entry struct {
-	a            *auth.Auth
-	addedAt      int64 // 账号加入时间（Unix 秒）；0 = 未知（等待 auths 文件 mtime 回填）
-	credits      int64
-	creditsTotal int64 // 积分总额度（UserResource 聚合；0 = 未知）
+	a       *auth.Auth
+	addedAt int64 // 账号加入时间（Unix 秒）；0 = 未知（等待 auths 文件 mtime 回填）
+	credits int64
+	// creditsBaseline 余额基线是否已建立（见 credits_hook.go）：false = 还没被写过，
+	// 下一次写入只当基线、不发余额变更事件，避免新导入被记成「凭空多分」。
+	creditsBaseline bool
+	creditsTotal    int64 // 积分总额度（UserResource 聚合；0 = 未知）
 	// creditsExpiring 配置窗口内即将过期的可用积分子集，是 credits 的一部分。
 	// creditsEarliestExpiry / creditsEarliestRemaining 是全部未来到期批次中的最早一批；
 	// 两者均由签到/余额刷新更新，供 earliest-expiry 路由和状态观测使用。
@@ -243,7 +250,12 @@ type entry struct {
 	// 高于全部自动选号策略。持久化（stateAccount.Priority），重启不丢人工排序。
 	// 只由 AdjustPriority / ClearPriority 在写锁内改动。
 	priority int
-	inFlight atomic.Int64
+	// maxInFlight 账号级在途上限覆盖（面板「并发」按钮设置，对齐上游 1.0.9 的
+	// Account.max_in_flight 三态）：nil = 跟随全局（含 global 域分档），
+	// 0 = 不限，正整数 = 该账号自己的上限。持久化（stateAccount.MaxInFlight）——
+	// 慢号限流是运维的明确意图，重启不该悄悄回到全局。
+	maxInFlight *int
+	inFlight    atomic.Int64
 }
 
 // modelCostOf 返回该账号在指定 model 上的有效成本观测；无观测或观测过期返回 ok=false。
@@ -457,6 +469,9 @@ type stateAccount struct {
 	// Priority 面板手动排序优先级（见 Status.Priority / entry.priority）：非零即
 	// 手动档，高于全部自动选号策略。持久化以保留人工排序（omitempty：0 = 未干预）。
 	Priority int `json:"priority,omitempty"`
+	// MaxInFlight 账号级在途上限覆盖（见 Status.MaxInFlight / entry.maxInFlight）。
+	// 指针 + omitempty：缺键 = 跟随全局；显式落盘的 0 必须能恢复成 0（0 = 不限）。
+	MaxInFlight *int `json:"max_in_flight,omitempty"`
 }
 
 // stateModelCooldown 单个 (账号, 模型) 的模型级独立冷却持久化记录，与运行态

@@ -38,6 +38,11 @@ function syComboCloseAll(except) {
     if (SY_COMBO_CLOSERS[i] !== except) SY_COMBO_CLOSERS[i]();
   }
 }
+// 日历弹层的关闭函数数组：与 SY_COMBO_CLOSERS 同处声明在文件头。
+// go() 在顶层就会调用它，函数声明会提升但 const 数组不会，
+// 放在后面会在首次切视图时踩进暂时性死区，整页初始化直接崩。
+const SY_CAL_CLOSERS = [];
+
 function enhanceSelect(sel) {
   if (!sel || sel.dataset.syCombo === '1') return null;
   if (sel.multiple || sel.size > 1) return null;   // 多选/列表型不碰
@@ -100,21 +105,73 @@ function enhanceSelect(sel) {
     menu.style.top = Math.round(top) + 'px';
   };
 
-  for (const opt of sel.options) {
-    const el = document.createElement('div');
-    el.className = 'sy-combo-item';
-    el.setAttribute('role', 'option');
-    el.textContent = opt.textContent.trim();
-    el.onclick = () => {
-      if (opt.disabled) return;
-      const changed = sel.value !== opt.value;
-      sel.value = opt.value;              // 触发下面覆写的 setter → sync()
-      sync();
-      close();
-      if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+  /* 选项列表可重建：动态填充 option 的下拉（流水页的账号/来源筛选）在改完
+     options 后调用 sel.__syRebuild()，浮层才会跟着变。老代码只在初始化时建一次
+     浮层，动态选项永远不出现——这是「下拉里看不到新账号」的根因。 */
+  const rebuild = () => {
+    menu.querySelectorAll('.sy-combo-item').forEach(el => el.remove());
+    items.length = 0;
+    for (const opt of sel.options) {
+      const el = document.createElement('div');
+      el.className = 'sy-combo-item';
+      el.setAttribute('role', 'option');
+      el.textContent = opt.textContent.trim();
+      el.onclick = () => {
+        if (opt.disabled) return;
+        const changed = sel.value !== opt.value;
+        sel.value = opt.value;              // 触发下面覆写的 setter → sync()
+        sync();
+        close();
+        if (changed) sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      menu.appendChild(el);
+      items.push({ el: el, opt: opt });
+    }
+    applyFilter();
+    sync();
+  };
+  /* 选项 >= 8 时浮层顶部给一个过滤框：账号池 / 模型列表这类长下拉，滚动找
+     比打字慢得多。值仍然只写回原生 select（唯一数据源不变）。 */
+  let filterEl = null;
+  const applyFilter = () => {
+    const kw = filterEl ? filterEl.value.trim().toLowerCase() : '';
+    let first = null;
+    for (const it of items) {
+      const hit = !kw || it.el.textContent.toLowerCase().indexOf(kw) >= 0;
+      it.el.style.display = hit ? '' : 'none';
+      if (hit && !first) first = it.el;
+    }
+    if (!filterEl) return;
+    filterEl.hidden = false;
+    if (kw && !first) {
+      menu.querySelector('.sy-combo-none').hidden = false;
+    } else {
+      const none = menu.querySelector('.sy-combo-none');
+      if (none) none.hidden = true;
+    }
+  };
+  sel.__syRebuild = rebuild;
+  rebuild();
+  if (items.length >= 8) {
+    filterEl = document.createElement('input');
+    filterEl.type = 'text';
+    filterEl.className = 'sy-combo-filter';
+    filterEl.placeholder = '输入筛选…';
+    filterEl.setAttribute('aria-label', '筛选选项');
+    const none = document.createElement('div');
+    none.className = 'sy-combo-none';
+    none.textContent = '没有匹配的选项';
+    none.hidden = true;
+    menu.insertBefore(none, menu.lastElementChild ? menu.lastElementChild.nextSibling : null);
+    menu.insertBefore(filterEl, menu.firstChild);
+    filterEl.oninput = applyFilter;
+    filterEl.onkeydown = ev => {
+      if (ev.key !== 'Enter') return;
+      const vis = items.find(it => it.el.style.display !== 'none');
+      if (vis) vis.el.click();
+      ev.preventDefault();
     };
-    menu.appendChild(el);
-    items.push({ el: el, opt: opt });
+    filterEl.onclick = ev => ev.stopPropagation();
   }
 
   btn.onclick = ev => {
@@ -122,6 +179,7 @@ function enhanceSelect(sel) {
     if (open) { close(); return; }
     syComboCloseAll(close);
     open = true; menu.classList.add('on'); btn.setAttribute('aria-expanded', 'true');
+    if (filterEl) { filterEl.value = ''; applyFilter(); }
     SY_COMBO_CLOSERS.push(close);
     // 定位 + 选中项滚动放到下一帧：点击回调里只做「显示」这一件事，
     // 避免在事件派发过程中对刚显示的浮层做强制布局/滚动写入。
@@ -402,9 +460,14 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', qoder: 'Qoder', apikeys: '密钥管理', config: '配置', logs: '运行日志', diagnose: '错误诊断' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', journal: '积分流水', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', qoder: 'Qoder', apikeys: '密钥管理', config: '配置', maint: '更新与备份', logs: '运行日志', diagnose: '错误诊断' };
 function go(v) {
   view = v;
+  // data-view 落到 <html> 上：样式用它门控「哪些页面显示顶部总览卡」（#9），
+  // 不必给每个视图手写 display:none。
+  document.documentElement.dataset.view = v;
+  syComboCloseAll();
+  syCalCloseAll();
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
   $('ttl').textContent = TITLES[v];
@@ -418,6 +481,8 @@ function go(v) {
   if (v === 'diagnose') loadDiagnose();
   if (v === 'usage') { loadUsage(); loadUsageGroups(); }
   if (v === 'packages') loadPackages();
+  if (v === 'journal') loadJournal();
+  if (v === 'maint') loadMaintenance();
   if (v === 'taskscenter') reattachQueueView();
   if (v === 'growth') loadGrowth();
 }
@@ -734,7 +799,7 @@ function renderAccounts(list) {
       '<td><span class="st">' + tag + note + '</span></td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
-      '<td class="num">' + (s.in_flight || 0) + '</td>' +
+      '<td class="num inflight-cell" title="' + esc(inflightTip(s)) + '">' + inflightCell(s) + '</td>' +
       '<td class="num usage-cell" title="' + esc(usageTitle) + '"><span class="usage-line" aria-label="' + esc(usageTitle) + '">' +
         '<span class="usage-item usage-count"><b>' + req + '</b><em>次</em></span>' +
         '<span class="usage-item usage-total"><b>' + totalTok + '</b>' + totalTokUnit + '</span>' +
@@ -747,6 +812,8 @@ function renderAccounts(list) {
         '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '">签到</button>' +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '">余额</button>' +
         '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>' +
+        // 账号级并发上限：覆盖池级 max_in_flight（跟随全局 / 不限 / 指定 N 三态）。
+        '<button class="xs ghost" data-a="inflight" data-u="' + esc(s.uid) + '" title="' + esc(inflightTip(s)) + '">并发</button>' +
         '<button class="xs ghost" data-a="compensation" data-u="' + esc(s.uid) + '">领补偿</button>' +
         (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
                 : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
@@ -772,6 +839,11 @@ async function loadOverview(quiet) {
   const totSum = (d.accounts || []).reduce((a, s) => a + (s.credits_total || 0), 0);
   $('sCredits').textContent = totSum > 0 ? remSum + ' / ' + totSum : remSum;
     $('sSticky').textContent = d.sticky_sessions;
+    // 积分构成页顶部的总览卡（#9）：与账号池共用同一份 overview 数据，不额外请求。
+    if ($('pkTotal')) $('pkTotal').textContent = d.total;
+    if ($('pkHealthy')) $('pkHealthy').textContent = d.healthy;
+    if ($('pkCooling')) $('pkCooling').textContent = d.cooling;
+    if ($('pkDisabled')) $('pkDisabled').textContent = d.disabled;
     $('navSub').textContent = 'v' + d.version;
     $('navVer').textContent = 'v' + d.version;
     $('navRedis').textContent = d.redis_mode === 'upstash' ? 'Redis 镜像' : '本地内存';
@@ -899,6 +971,9 @@ $('accBody').addEventListener('click', async ev => {
     } else if (a === 'compensation') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/compensation/claim', { method: 'POST' });
       toast(r.reason || '领取完成', r.ok ? 'ok' : 'err');
+    } else if (a === 'inflight') {
+      openInFlight(u);
+      return;   // 只开弹窗，不打断按钮状态、不整表重载
     } else if (a === 'tasks') {
       openTasks(u);
     } else if (a === 'remove') {
@@ -1643,23 +1718,38 @@ $('btnStartLogin').onclick = startAddLogin;
 $('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank');
 $('btnCopyUrl').onclick = () => navigator.clipboard.writeText($('addUrl').textContent)
   .then(() => toast('链接已复制', 'ok'), () => toast('复制失败，请手动选择复制', 'err'));
-$('importFile').onchange = async () => {
-  const file = $('importFile').files[0];
-  if (!file) return;
-  $('importDone').hidden = true; $('importErr').hidden = true;
-  const fd = new FormData();
-  fd.append('file', file);
-  const h = {};
+/* 支持多选：一次选中多个文件时逐个提交，把每个文件的结果拼成一行汇报。
+   以前只取 files[0]，用户多选后只会觉得「后面的文件没反应」。 */
+async function importCockpitFiles(files) {
   const k = localStorage.getItem(LS_KEY);
+  const h = {};
   if (k) h['Authorization'] = 'Bearer ' + k;
-  try {
+  let ok = 0, skip = 0; const errs = [];
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
     const r = await fetch('/panel/api/import/cockpit', { method: 'POST', body: fd, headers: h });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { errs.push(file.name + '：' + (d.error || ('HTTP ' + r.status))); continue; }
+    ok += Number(d.imported || 0);
+    skip += Number(d.skipped || 0);
+    if (d.errors && d.errors.length) errs.push(file.name + '：' + d.errors.join('；'));
+  }
+  return { ok: ok, skip: skip, errs: errs };
+}
+
+$('importFile').onchange = async () => {
+  const files = Array.prototype.slice.call($('importFile').files || []);
+  if (!files.length) return;
+  $('importDone').hidden = true; $('importErr').hidden = true;
+  try {
+    const r = await importCockpitFiles(files);
     $('importDone').hidden = false;
-    $('importDone').textContent = '导入完成：成功 ' + d.imported + ' 个' + (d.skipped ? '，跳过 ' + d.skipped + ' 个' : '');
-    if (d.errors && d.errors.length) {
-      console.warn('import errors:', d.errors);
+    $('importDone').textContent = '导入完成：成功 ' + r.ok + ' 个' + (r.skip ? '，跳过 ' + r.skip + ' 个' : '');
+    if (r.errs.length) {
+      $('importErr').hidden = false;
+      $('importErr').textContent = '部分条目失败：' + r.errs.join(' / ');
+      console.warn('import errors:', r.errs);
     }
     loadOverview(true);
   } catch (e) {
@@ -2366,8 +2456,16 @@ function renderUsage(d) {
 
   // 卡片、三张表与时序图全部按所选窗口统计（切窗口数字随之变化）；
   // 「全部历史」含 90 天前折叠出的日桶。这里标注当前口径与数据起点。
-  const winLabel = ($('usWindow') && $('usWindow').selectedOptions[0]) ?
-    $('usWindow').selectedOptions[0].textContent.trim() : '';
+  // 口径标签来自后端回显（d.window / d.start / d.end）：显式区间时显示日期，
+  // 滚动窗口时显示「近 3 天」。前端不再自己猜下拉框当前文字。
+  let winLabel = '';
+  if (d.window === 'custom') {
+    winLabel = (d.start || '不限') + ' → ' + (d.end || '不限');
+  } else if (d.window === 'all') {
+    winLabel = '全部历史';
+  } else if ($('usWindow') && $('usWindow').selectedOptions[0]) {
+    winLabel = $('usWindow').selectedOptions[0].textContent.trim();
+  }
   $('usNote').textContent =
     (winLabel ? winLabel + ' · ' : '') +
     (d.buckets || 0) + ' 个分桶' +
@@ -2537,18 +2635,58 @@ function renderUsageChart(series) {
 
 function fmtTokTip(v) { return fmtTok(v); }
 
+/* 显式区间（#2）：开始/结束任一有值就走区间，滚动窗口选择器这时只是
+   「没选日期时」的默认口径，两者互斥、不叠加（后端同规则）。
+   值格式 YYYY-MM-DD，由主题化日历（syCalendar）写入，不接受手改的怪格式：
+   后端会 400，前端提示一句就好。 */
+function usRangeParams() {
+  const s = ($('usStart') && $('usStart').value.trim()) || '';
+  const e = ($('usEnd') && $('usEnd').value.trim()) || '';
+  const q = [];
+  if (s || e) {
+    if (s) q.push('start=' + encodeURIComponent(s));
+    if (e) q.push('end=' + encodeURIComponent(e));
+  } else {
+    q.push('hours=' + encodeURIComponent(($('usWindow') && $('usWindow').value) || 72));
+  }
+  return q.join('&');
+}
+
+// usGuard：代次守卫。慢响应回来时代次已变（用户又切了窗口），直接丢弃这一次结果。
+const usGuard = (function () {
+  let g = 0;
+  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
+})();
 async function loadUsage() {
-  const hours = ($('usWindow') && $('usWindow').value) || 72;
+  const mine = usGuard.next();
   try {
-    const d = await api('usage?hours=' + encodeURIComponent(hours));
+    const d = await api('usage?' + usRangeParams());
+    if (mine !== usGuard.cur()) return;   // 慢响应回来时用户已经换了窗口/区间
     renderUsage(d);
   } catch (e) {
+    if (mine !== usGuard.cur()) return;
     $('usChart').innerHTML = '<div class="us-empty">读取用量失败：' + esc(e.message) + '</div>';
+    $('usNote').textContent = '查询失败：' + e.message;
   }
 }
 
 if ($('btnUsage')) $('btnUsage').onclick = loadUsage;
-if ($('usWindow')) $('usWindow').onchange = loadUsage;
+if ($('usWindow')) $('usWindow').onchange = () => {
+  // 选了滚动窗口就清掉日期：保留两个同时生效的口径 = 用户猜不出数字怎么来的
+  if ($('usStart')) $('usStart').value = '';
+  if ($('usEnd')) $('usEnd').value = '';
+  if ($('usStart')) $('usStart').dispatchEvent(new Event('sy-date-change'));
+  if ($('usEnd')) $('usEnd').dispatchEvent(new Event('sy-date-change'));
+  loadUsage();
+};
+if ($('btnUsRange')) $('btnUsRange').onclick = loadUsage;
+if ($('btnUsRangeClear')) $('btnUsRangeClear').onclick = () => {
+  if ($('usStart')) $('usStart').value = '';
+  if ($('usEnd')) $('usEnd').value = '';
+  if ($('usStart')) $('usStart').dispatchEvent(new Event('sy-date-change'));
+  if ($('usEnd')) $('usEnd').dispatchEvent(new Event('sy-date-change'));
+  loadUsage();
+};
 
 /* ── 积分构成 ─────────────────────────────────────────────────────── */
 /* 一个账号的余额是若干积分包之和。包按来源命名（「国内运营裂变包」「拉新权益包」
@@ -3715,16 +3853,10 @@ async function phVerify() {
 $('phSend').onclick = phSend;
 $('phVerify').onclick = phVerify;
 
-/* ── 上游与路由（只读视图）─────────────────────────────────────────
-   只读 /status 的 upstreams + routing；与其它视图共用 api()/esc()，
-   不再各自复制一份请求与转义逻辑（三份重复实现的漂移只是时间问题）。
-   /status 是顶层接口（不在 /panel/api/ 下），所以这里单独走一次 fetch。 */
-function authHeaders() {
-  const h = {};
-  const k = localStorage.getItem(LS_KEY);
-  if (k) h['Authorization'] = 'Bearer ' + k;
-  return h;
-}
+/* ── 上游与路由（只读视图）
+   数据走面板自己的 /panel/api/status：/status 属数据面、认网关 api_key，
+   而面板凭据（panel.password）与主密钥配成不同值是生产常态 —— 前端拿面板
+   凭据去敲只会 401，而且空白是静默的。凭据边界由后端划，不靠前端猜。 */
 function routeHours(routing, name) {
   if (!routing || !routing.hours || !routing.hours[name]) return '全天';
   return routing.hours[name].join('、');
@@ -3735,7 +3867,7 @@ function renderRoutes(d) {
   const ups = (d && d.upstreams) || [];
   const routing = (d && d.routing) || {};
   const rows = ups.map(u => {
-    const accts = u.accounts != null ? u.accounts : (u.name === 'workbuddy' ? (d.total || 0) : '-');
+    const accts = u.accounts != null ? u.accounts : '—';   // 缺字段就空着，别报 0
     let models = '动态目录';
     if (u.models && u.models.length) {
       const ids = u.models.map(m => m.id || m);
@@ -3768,9 +3900,12 @@ function renderRoutes(d) {
 }
 async function loadRoutes() {
   try {
-    const r = await fetch('/status', { headers: authHeaders(), cache: 'no-store' });
-    if (r.ok) renderRoutes(await r.json());
-  } catch (e) { /* 只读卡片失败静默 */ }
+    renderRoutes(await api('status'));
+  } catch (e) {
+    // 读不到就写在卡片上：静默空白只会让人以为没配路由，不知道该找谁。
+    const note = $('routeNote');
+    if (note) note.textContent = '读不到上游与路由：' + (e && e.message ? e.message : '未知原因');
+  }
 }
 
 /* ── Qoder（独立一栏：上游配置 + 签到 + 可用模型）─────────────────
@@ -3958,3 +4093,542 @@ async function loadUsageGroups() {
     renderUsageGroups(d.by_group);
   } catch (e) { /* 静默 */ }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   v1.19.7 增量：账号级并发上限（#1）· 主题化日历（#7）· 积分流水（#5）
+             · 更新与备份（#3）
+   集中放在文件末尾，是为了让每一块都能独立读懂、独立删掉回滚；前面的
+   改动只是给这些函数留出调用点。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 通用浮层（弹窗）────────────────────────────────────────────────
+   不用 window.prompt/confirm 做需要校验的输入：那两个不能带说明文案，
+   也没法放三态单选。这里做一个最小的 modal，视觉与 .navset 同一套。 */
+let SY_POP = null;
+function syClosePop() {
+  if (!SY_POP) return;
+  const p = SY_POP;
+  SY_POP = null;
+  if (p.mask) p.mask.remove();
+  document.removeEventListener('keydown', p.onesc, true);
+}
+function syPopup(opts) {
+  syClosePop();
+  const mask = document.createElement('div');
+  mask.className = 'sy-pop-mask';
+  const box = document.createElement('div');
+  box.className = 'sy-pop';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  const hd = document.createElement('div');
+  hd.className = 'sy-pop-hd';
+  hd.innerHTML = '<span>' + esc(opts.title) + '</span><button type="button" class="sy-pop-x" aria-label="关闭">×</button>';
+  const bd = document.createElement('div');
+  bd.className = 'sy-pop-bd';
+  if (opts.bodyHtml) bd.innerHTML = opts.bodyHtml;
+  const ft = document.createElement('div');
+  ft.className = 'sy-pop-ft';
+  const onesc = ev => { if (ev.key === 'Escape') syClosePop(); };
+  box.appendChild(hd); box.appendChild(bd); box.appendChild(ft);
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  SY_POP = { mask: mask, box: box, foot: ft, onesc: onesc };
+  document.addEventListener('keydown', onesc, true);
+  mask.addEventListener('pointerdown', ev => { if (ev.target === mask) syClosePop(); });
+  hd.querySelector('.sy-pop-x').onclick = syClosePop;
+  (opts.buttons || []).forEach(b => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = b.cls || 'xs ghost';
+    btn.textContent = b.text;
+    btn.onclick = () => { Promise.resolve(b.onclick && b.onclick(box)).then(ok => { if (ok !== false) syClosePop(); }); };
+    ft.appendChild(btn);
+  });
+  return box;
+}
+
+/* ── #1 账号级并发上限 ──────────────────────────────────────────────
+   三态语义与后端一致（internal/pool/inflight.go）：
+     null  = 跟随池级设置（默认，按档位分档）
+     0     = 这个号不限并发
+     N>0   = 这个号最多 N 个在途
+   面板只负责把三态表达清楚，判定全在池里。 */
+function inflightMode(s) {
+  const v = s ? s.max_in_flight : undefined;
+  if (v === null || v === undefined) return 'inherit';
+  if (Number(v) === 0) return 'unlimited';
+  return 'fixed';
+}
+function inflightCell(s) {
+  const cur = s.in_flight || 0;
+  const m = inflightMode(s);
+  if (m === 'fixed') return cur + ' <span class="if-lim">/ ' + Number(s.max_in_flight) + '</span>';
+  if (m === 'unlimited') return cur + ' <span class="if-lim">/ ∞</span>';
+  return String(cur);
+}
+function inflightTip(s) {
+  const m = inflightMode(s);
+  if (m === 'fixed') return '账号级并发上限 ' + Number(s.max_in_flight) + '（覆盖池级设置）· 当前在途 ' + (s.in_flight || 0);
+  if (m === 'unlimited') return '这个号不限并发（账号级设为 0）· 当前在途 ' + (s.in_flight || 0);
+  return '跟随池级并发设置 · 当前在途 ' + (s.in_flight || 0) + '（点「并发」可以单独限定这个号）';
+}
+function openInFlight(uid) {
+  const list = (overviewData && overviewData.accounts) || [];
+  const s = list.find(x => x.uid === uid);
+  if (!s) { toast('账号已不在池里，刷新后再试', 'err'); return; }
+  const mode = inflightMode(s);
+  const cur = mode === 'fixed' ? Number(s.max_in_flight) : 1;
+  const name = s.nickname || uid.slice(0, 8);
+  const html =
+    '<div class="if-row"><span class="if-k">账号</span><span class="if-v">' + esc(name) + '</span></div>' +
+    '<div class="if-opts">' +
+      '<label><input type="radio" name="ifmode" value="inherit"' + (mode === 'inherit' ? ' checked' : '') + '><span>跟随全局</span><em>按池级分档设置（默认）</em></label>' +
+      '<label><input type="radio" name="ifmode" value="unlimited"' + (mode === 'unlimited' ? ' checked' : '') + '><span>不限并发</span><em>这个号可以同时跑任意多请求</em></label>' +
+      '<label><input type="radio" name="ifmode" value="fixed"' + (mode === 'fixed' ? ' checked' : '') + '><span>固定上限</span><em>最多允许几个请求同时在途</em></label>' +
+    '</div>' +
+    '<div class="if-num"' + (mode === 'fixed' ? '' : ' hidden') + '>' +
+      '<input type="number" id="ifVal" min="1" max="2147483647" step="1" value="' + cur + '">' +
+      '<span class="note">1 – 2147483647</span>' +
+    '</div>' +
+    '<div class="if-tip">网关本地并发保护，不代表上游配额。</div>';
+  const box = syPopup({
+    title: '账号并发上限',
+    bodyHtml: html,
+    buttons: [
+      { text: '取消', cls: 'xs ghost', onclick: () => true },
+      {
+        text: '保存', cls: 'xs primary', onclick: async (b) => {
+          const picked = b.querySelector('input[name="ifmode"]:checked');
+          const m = picked ? picked.value : 'inherit';
+          let limit = null;
+          if (m === 'unlimited') limit = 0;
+          if (m === 'fixed') {
+            const raw = b.querySelector('#ifVal').value.trim();
+            if (!/^[0-9]{1,10}$/.test(raw) || Number(raw) < 1) { toast('请输入 1 以上的整数', 'err'); return false; }
+            limit = Number(raw);
+          }
+          try {
+            const r = await api('accounts/' + encodeURIComponent(uid) + '/inflight', {
+              method: 'POST', body: JSON.stringify({ limit: limit })
+            });
+            toast('已保存：' + (r.effective === null || r.effective === undefined
+              ? '跟随全局' : (r.effective === 0 ? '不限并发' : '上限 ' + r.effective)), 'ok');
+            loadOverview(true);
+          } catch (e) { toast(e.message, 'err'); return false; }
+          return true;
+        }
+      }
+    ]
+  });
+  box.querySelectorAll('input[name="ifmode"]').forEach(rd => {
+    rd.onchange = () => {
+      box.querySelector('.if-num').hidden = rd.value !== 'fixed';
+    };
+  });
+}
+
+/* ── #7 主题化日期选择器 ────────────────────────────────────────────
+   原生 <input type="date"> 的日历由浏览器绘制，CSS 一行都改不动（深色页
+   上是系统白底），且各浏览器格式不一致。这里用文本框当值载体（值恒为
+   YYYY-MM-DD），弹层自己画：跟随主题、周一起排、可选今天/清除。
+   不改任何既有取值逻辑：读的人照旧 input.value。 */
+function syCalCloseAll(except) {
+  for (let i = SY_CAL_CLOSERS.length - 1; i >= 0; i--) {
+    if (SY_CAL_CLOSERS[i] !== except) SY_CAL_CLOSERS[i]();
+  }
+}
+function syDateYMD(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function syParseYMD(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+function syCalendar(input) {
+  if (!input || input.dataset.syCal === '1') return;
+  input.dataset.syCal = '1';
+  input.readOnly = true;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  const menu = document.createElement('div');
+  menu.className = 'sy-cal';
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', '选择日期');
+  document.body.appendChild(menu);
+  let open = false, cursor = syParseYMD(input.value) || new Date();
+  const close = () => {
+    if (!open) return;
+    open = false; menu.classList.remove('on');
+    const i = SY_CAL_CLOSERS.indexOf(close);
+    if (i >= 0) SY_CAL_CLOSERS.splice(i, 1);
+  };
+  const place = () => {
+    const r = input.getBoundingClientRect();
+    menu.style.left = '0px'; menu.style.top = '0px';
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    let left = r.left;
+    if (left + w > innerWidth - 8) left = Math.max(8, innerWidth - 8 - w);
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) {
+      const up = r.top - 6 - h;
+      top = up >= 8 ? up : Math.max(8, innerHeight - 8 - h);
+    }
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(top) + 'px';
+  };
+  const pick = ymd => {
+    input.value = ymd;
+    close();
+    input.dispatchEvent(new Event('sy-date-change', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const draw = () => {
+    const y = cursor.getFullYear(), mo = cursor.getMonth();
+    const first = new Date(y, mo, 1);
+    // 周一为一周之首：中文页面上周日开头会被读成「日期错位一天」。
+    const lead = (first.getDay() + 6) % 7;
+    const days = new Date(y, mo + 1, 0).getDate();
+    const todayYMD = syDateYMD(new Date());
+    const selYMD = input.value || '';
+    let cells = '';
+    for (let i = 0; i < lead; i++) cells += '<span class="d pad"></span>';
+    for (let d = 1; d <= days; d++) {
+      const ymd = y + '-' + String(mo + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      const cls = ['d'];
+      if (ymd === selYMD) cls.push('on');
+      if (ymd === todayYMD) cls.push('today');
+      cells += '<button type="button" class="' + cls.join(' ') + '" data-d="' + ymd + '">' + d + '</button>';
+    }
+    menu.innerHTML =
+      '<div class="sy-cal-hd">' +
+        '<button type="button" class="sy-cal-nav" data-nav="-12" title="上一年">«</button>' +
+        '<button type="button" class="sy-cal-nav" data-nav="-1" title="上个月">‹</button>' +
+        '<span class="sy-cal-ym">' + y + ' 年 ' + (mo + 1) + ' 月</span>' +
+        '<button type="button" class="sy-cal-nav" data-nav="1" title="下个月">›</button>' +
+        '<button type="button" class="sy-cal-nav" data-nav="12" title="下一年">»</button>' +
+      '</div>' +
+      '<div class="sy-cal-wk">' + ['一', '二', '三', '四', '五', '六', '日'].map(w => '<span>' + w + '</span>').join('') + '</div>' +
+      '<div class="sy-cal-grid">' + cells + '</div>' +
+      '<div class="sy-cal-ft"><button type="button" class="xs ghost" data-act="today">今天</button>' +
+        '<button type="button" class="xs ghost" data-act="clear">清除</button>' +
+        '<span class="grow"></span><span class="sy-cal-val">' + esc(selYMD || '未选') + '</span></div>';
+    menu.querySelectorAll('[data-nav]').forEach(b => {
+      b.onclick = ev => {
+        ev.stopPropagation();
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth() + Number(b.dataset.nav), 1);
+        draw(); place();
+      };
+    });
+    menu.querySelectorAll('.d[data-d]').forEach(b => {
+      b.onclick = ev => { ev.stopPropagation(); pick(b.dataset.d); };
+    });
+    const t = menu.querySelector('[data-act="today"]');
+    if (t) t.onclick = ev => { ev.stopPropagation(); pick(todayYMD); };
+    const c = menu.querySelector('[data-act="clear"]');
+    if (c) c.onclick = ev => { ev.stopPropagation(); pick(''); };
+  };
+  input.onclick = ev => {
+    ev.preventDefault();
+    if (open) { close(); return; }
+    syCalCloseAll(close);
+    cursor = syParseYMD(input.value) || new Date();
+    open = true; menu.classList.add('on');
+    SY_CAL_CLOSERS.push(close);
+    draw();
+    requestAnimationFrame(() => { if (open) { place(); } });
+  };
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') close();
+    if (ev.key === 'Enter') input.click();
+  });
+}
+document.addEventListener('pointerdown', ev => {
+  const t = ev.target;
+  if (t && t.closest && (t.closest('.sy-cal') || (t.classList && t.classList.contains('sy-date')))) return;
+  syCalCloseAll();
+}, true);
+function enhanceDates(root) {
+  (root || document).querySelectorAll('input.sy-date').forEach(syCalendar);
+}
+enhanceDates();
+
+/* ── #5 积分流水 ───────────────────────────────────────────────────
+   两套账分开列（confirmed / observed），顶部小计也分开给。任何把它们
+   相加的数字都会把同一笔钱数两遍——这里连一个「合计」字段都不给。 */
+const jnGuard = (function () {
+  let g = 0;
+  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
+})();
+let jnPage = 1, jnSize = 50, jnTotal = 0;
+function jnNick(uid) {
+  const list = (overviewData && overviewData.accounts) || [];
+  const s = list.find(x => x.uid === uid);
+  if (s && s.nickname) return s.nickname;
+  return uid && uid.length > 8 ? uid.slice(0, 8) : (uid || '');
+}
+function jnQueryParams() {
+  const q = [];
+  const kind = ($('jnKind') && $('jnKind').value) || '';
+  const uid = ($('jnAcct') && $('jnAcct').value) || '';
+  const src = ($('jnSrc') && $('jnSrc').value) || '';
+  const s = ($('jnStart') && $('jnStart').value.trim()) || '';
+  const e = ($('jnEnd') && $('jnEnd').value.trim()) || '';
+  if (kind && kind !== 'all') q.push('kind=' + encodeURIComponent(kind));
+  if (uid) q.push('uid=' + encodeURIComponent(uid));
+  if (src) q.push('source=' + encodeURIComponent(src));
+  if (s) q.push('start=' + encodeURIComponent(s));
+  if (e) q.push('end=' + encodeURIComponent(e));
+  q.push('page=' + jnPage);
+  q.push('size=' + jnSize);
+  return q.join('&');
+}
+function jnFillSelect(sel, values, labels, keep) {
+  if (!sel) return;
+  const prev = keep ? sel.value : '';
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = labels.all;
+  sel.appendChild(all);
+  values.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = labels.of ? labels.of(v) : v;
+    sel.appendChild(o);
+  });
+  sel.value = prev && values.indexOf(prev) >= 0 ? prev : '';
+  if (sel.__syRebuild) sel.__syRebuild();
+}
+async function loadJournal() {
+  const mine = jnGuard.next();
+  let d;
+  try {
+    d = await api('journal?' + jnQueryParams());
+  } catch (e) {
+    if (mine !== jnGuard.cur()) return;
+    $('jnBody').innerHTML = '<tr><td colspan="7" class="empty">读取流水失败：' + esc(e.message) + '</td></tr>';
+    $('jnNote').textContent = '查询失败';
+    return;
+  }
+  if (mine !== jnGuard.cur()) return;
+  jnTotal = d.total || 0;
+  if (d.confirmed_total === undefined) { /* 老后端没有小计字段时不猜，留空 */ }
+  $('jnStats').innerHTML =
+    usStat(fmtInt(d.confirmed_total || 0), '确认奖励小计', 'good',
+      '面板确认到的发放：任务奖励 + 每日权益。金额来自上游领取响应。') +
+    usStat(fmtInt(d.observed_total || 0), '余额观察小计', '',
+      '余额刷新时观测到的净变化（含扣减与来源不明的补发）。与上一项部分重叠，两者不可相加。') +
+    usStat(String(jnTotal), '匹配条数') +
+    usStat((overviewData && overviewData.total) || '—', '池内账号数');
+  const accts = (d.accounts || []).slice();
+  jnFillSelect($('jnAcct'), accts, { all: '全部账号', of: uid => jnNick(uid) }, true);
+  jnFillSelect($('jnSrc'), d.sources || [], { all: '全部来源' }, true);
+  const rows = d.rows || [];
+  $('jnBody').innerHTML = rows.length ? rows.map(r => {
+    const conf = r.kind === 'confirmed';
+    const pos = Number(r.delta) > 0;
+    const ba = (r.balance_after === null || r.balance_after === undefined) ? '—' : fmtInt(r.balance_after);
+    return '<tr>' +
+      '<td class="mark" aria-hidden="true"></td>' +
+      '<td class="num" title="' + esc(absTime(r.at)) + '">' + esc(absTime(r.at).slice(0, 16)) + '</td>' +
+      '<td>' + esc(r.account || jnNick(r.uid)) + '</td>' +
+      '<td><span class="tag ' + (conf ? 'ok' : 'warn') + '">' + (conf ? '确认事件' : '余额观察') + '</span></td>' +
+      '<td>' + esc(r.source || '') + '</td>' +
+      '<td class="num jn-delta ' + (pos ? 'up' : 'down') + '">' + (pos ? '+' : '') + fmtInt(r.delta) + '</td>' +
+      '<td class="num">' + ba + '</td>' +
+      '</tr>';
+  }).join('') : '<tr><td colspan="7" class="empty">这个条件下还没有流水</td></tr>';
+  const pages = Math.max(1, Math.ceil(jnTotal / jnSize));
+  $('jnPager').innerHTML =
+    '<button class="xs ghost" id="jnPrev"' + (jnPage <= 1 ? ' disabled' : '') + '>上一页</button>' +
+    '<span class="note">第 ' + jnPage + ' / ' + pages + ' 页 · 每页 ' + jnSize + ' 条</span>' +
+    '<button class="xs ghost" id="jnNext"' + (jnPage >= pages ? ' disabled' : '') + '>下一页</button>';
+  if ($('jnPrev')) $('jnPrev').onclick = () => { if (jnPage > 1) { jnPage -= 1; loadJournal(); } };
+  if ($('jnNext')) $('jnNext').onclick = () => { if (jnPage < pages) { jnPage += 1; loadJournal(); } };
+  $('jnNote').textContent = '共 ' + jnTotal + ' 条 · 显示第 ' + jnPage + ' 页';
+}
+if ($('btnJn')) $('btnJn').onclick = () => { jnPage = 1; loadJournal(); };
+if ($('btnJnClear')) $('btnJnClear').onclick = () => {
+  ['jnStart', 'jnEnd'].forEach(id => { if ($(id)) $(id).value = ''; });
+  ['jnKind', 'jnAcct', 'jnSrc'].forEach(id => { if ($(id)) { $(id).value = ''; if ($(id).__syRebuild) $(id).__syRebuild(); } });
+  jnPage = 1; loadJournal();
+};
+if ($('jnSize')) $('jnSize').onchange = () => { jnSize = Number($('jnSize').value) || 50; jnPage = 1; loadJournal(); };
+['jnKind', 'jnAcct', 'jnSrc'].forEach(id => {
+  const el = $(id);
+  if (el) el.onchange = () => { jnPage = 1; loadJournal(); };
+});
+
+/* ── #3 更新与备份 ─────────────────────────────────────────────────
+   命令高亮：先按空白分词，再逐 token esc()。
+   一次性 esc 整条命令会把 HTML 语法一起吞掉；先 esc 再分词则高亮标记
+   会被二次转义。只有「分词 → 每段自己 esc → 外面包标签」是安全的。 */
+function cmdHl(line) {
+  return String(line).split(/(\s+)/).map(tok => {
+    if (!tok || /^\s+$/.test(tok)) return esc(tok);
+    let cls = 'tk';
+    if (/^-{1,2}[a-z]/.test(tok)) cls = 'tk flag';
+    else if (/^(docker|compose|systemctl|journalctl|cd|pull|up|restart|logs|stop|start)$/i.test(tok)) cls = 'tk cmd';
+    else if (/[|;&]|&&/.test(tok)) cls = 'tk op';
+    return '<span class="' + cls + '">' + esc(tok) + '</span>';
+  }).join('');
+}
+function copyText(txt, btn) {
+  const done = () => { if (btn) { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1400); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(done, () => toast('复制失败，请手动选中', 'err'));
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动选中', 'err'); }
+  ta.remove();
+}
+function cmdBlock(title, lines) {
+  return '<div class="mt-grp"><div class="mt-grp-hd">' + esc(title) + '</div>' +
+    lines.map(l => '<div class="mt-cmd"><code>' + cmdHl(l) + '</code>' +
+      '<button type="button" class="xs ghost mt-copy">复制</button></div>').join('') +
+    '</div>';
+}
+let mtData = null;
+async function loadMaintenance() {
+  try {
+    const d = await api('maintenance/commands');
+    mtData = d;
+    // 状态只认后端那一次 semver 比较：has_update=线上更新，ahead=本地更新（fork 常态），
+    // 都不成立才是同版本。前端不再自己比字符串，免得留下第二套会漂移的规则。
+    const known = !!d.latest;
+    const status = d.has_update ? '有新版本可升级' : (!known ? '还没检查过' : (d.ahead ? '本地版本更新' : '已是最新'));
+    $('mtVer').innerHTML =
+      '<div class="mt-kv"><span>当前版本</span><b>v' + esc(d.version || '—') + '</b></div>' +
+      '<div class="mt-kv"><span>最新版本</span><b>' + (d.latest ? esc(d.latest) : '未检查') + '</b></div>' +
+      '<div class="mt-kv"><span>状态</span><b class="' + (d.has_update ? 'warn' : (known ? 'ok' : '')) + '">' +
+        esc(status) + '</b></div>' +
+      (d.release_url ? '<div class="mt-kv"><span>发布页</span><a href="' + esc(d.release_url) + '" target="_blank" rel="noreferrer">GitHub</a></div>' : '');
+    $('mtCmds').innerHTML = cmdBlock('Docker Compose（宿主机执行）', d.docker || []) +
+      cmdBlock('Linux 二进制 / systemd', d.linux || []);
+    // 复制取 code 的 textContent：高亮是包在 span 里的，textContent 天然还原原文，
+    // 不需要再维护一份下标数组（那条路一改分组就错位）。
+    $('mtCmds').querySelectorAll('.mt-copy').forEach(b => {
+      b.onclick = () => copyText(b.parentNode.querySelector('code').textContent, b);
+    });
+    $('mtNote').innerHTML = '<ul>' + (d.notes || []).map(x => '<li>' + esc(x) + '</li>').join('') + '</ul>';
+    $('mtPath').textContent = d.deploy_dir || '';
+  } catch (e) {
+    $('mtVer').innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>';
+  }
+}
+async function downloadDbBackup() {
+  const k = localStorage.getItem(LS_KEY);
+  const h = {};
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  $('btnDbBackup').disabled = true;
+  $('btnDbBackup').textContent = '打包中…';
+  try {
+    const r = await fetch('/panel/api/maintenance/db_backup', { method: 'POST', headers: h });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { msg = (await r.json()).error || msg; } catch (e) { /* 非 JSON 错误体 */ }
+      throw new Error(msg);
+    }
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = /filename="?([^"]+)"?/.exec(cd);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = m ? m[1] : 'wb-syan-backup.zip';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('备份已下载：' + a.download + '（含凭证，按机密文件保管）', 'ok');
+  } catch (e) {
+    toast('备份失败：' + e.message, 'err');
+  } finally {
+    $('btnDbBackup').disabled = false;
+    $('btnDbBackup').textContent = '下载整库备份（zip）';
+  }
+}
+async function restoreDbBackup() {
+  const f = $('dbRestoreFile');
+  if (!f || !f.files || !f.files.length) { toast('先选择要还原的备份 zip', 'err'); return; }
+  const file = f.files[0];
+  if (!/\.zip$/i.test(file.name)) { toast('只能选 .zip 备份包', 'err'); return; }
+  if (!confirm('还原会用备份覆盖当前的配置 / 账号池状态 / 用量 / 流水 / 凭证。\n覆盖前系统会先复制一份到 backups/restore-*。\n确认继续？')) return;
+  const k = localStorage.getItem(LS_KEY);
+  const h = {};
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  $('btnDbRestore').disabled = true;
+  $('btnDbRestore').textContent = '还原中…';
+  try {
+    const r = await fetch('/panel/api/maintenance/db_restore', { method: 'POST', headers: h, body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    $('mtRestore').innerHTML = '<div class="mt-ok">已还原 ' + (d.count || 0) + ' 个文件<br>' +
+      '<span class="note">覆盖前的原件在：' + esc(d.backup_dir || '') + '</span><br>' +
+      '<span class="note">' + esc(d.restart_hint || '请重启容器让新库生效') + '</span></div>';
+    toast('还原完成，请立刻重启容器', 'ok');
+  } catch (e) {
+    $('mtRestore').innerHTML = '<div class="mt-err">还原失败：' + esc(e.message) + '</div>';
+    toast('还原失败：' + e.message, 'err');
+  } finally {
+    $('btnDbRestore').disabled = false;
+    $('btnDbRestore').textContent = '上传并还原';
+    if (f) f.value = '';
+  }
+}
+if ($('btnDbBackup')) $('btnDbBackup').onclick = downloadDbBackup;
+if ($('btnDbRestore')) $('btnDbRestore').onclick = restoreDbBackup;
+
+/* ── #4 旧凭证 / .info.bak-* 导入 ───────────────────────────────────
+   后端 importInfo 走的是「任意文本 → 拆条目 → 逐条 Normalize」，本来就能吃
+   .info.bak-2026…（旧版升级留下的凭证备份）。这里缺的只是入口：文件选择框
+   原来写死 accept=".json"，浏览器直接把 .info / .bak 灰掉。
+   现在不给 accept，改成前端只做扩展名提示、后端做真正判定——扩展名是用户
+   自己起的，卡它只会挡住正常文件。 */
+async function importInfoFiles(files) {
+  const k = localStorage.getItem(LS_KEY);
+  const h = {};
+  if (k) h['Authorization'] = 'Bearer ' + k;
+  let ok = 0, skip = 0; const errs = [];
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const r = await fetch('/panel/api/import/info', { method: 'POST', body: fd, headers: h });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { errs.push(file.name + '：' + (d.error || ('HTTP ' + r.status))); continue; }
+    ok += Number(d.imported || 0);
+    skip += Number(d.skipped || 0);
+    if (Array.isArray(d.errors) && d.errors.length) errs.push(file.name + '：' + d.errors.join('；'));
+  }
+  return { ok: ok, skip: skip, errs: errs };
+}
+if ($('importInfoFile')) {
+  $('importInfoFile').onchange = async () => {
+    const files = Array.prototype.slice.call($('importInfoFile').files || []);
+    if (!files.length) return;
+    $('importInfoDone').hidden = true; $('importInfoErr').hidden = true;
+    try {
+      const r = await importInfoFiles(files);
+      $('importInfoDone').hidden = false;
+      $('importInfoDone').textContent = '凭证导入完成：成功 ' + r.ok + ' 个' +
+        (r.skip ? '，跳过 ' + r.skip + ' 个' : '') +
+        (files.length > 1 ? '（共提交 ' + files.length + ' 个文件）' : '');
+      if (r.errs.length) {
+        $('importInfoErr').hidden = false;
+        $('importInfoErr').textContent = '部分条目失败：' + r.errs.join(' / ');
+      }
+      loadOverview(true);
+    } catch (e) {
+      $('importInfoErr').hidden = false;
+      $('importInfoErr').textContent = '导入失败：' + e.message;
+    }
+    $('importInfoFile').value = '';
+  };
+}
+if ($('btnMtReload')) $('btnMtReload').onclick = loadMaintenance;

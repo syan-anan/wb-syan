@@ -199,6 +199,19 @@ func (rt *RouteTable) WindowList() map[string][]string {
 	return out
 }
 
+// StatusSummary 面板用的上游 + 路由快照。
+//
+// 为什么要单独开这个方法、而不是让面板去请求 /status：/status 属数据面，
+// 认网关 api_key；面板认 panel.password。两者配成不同值时（生产就这么配的），
+// 面板拿自己的凭据去敲 /status 只会拿到 401，「上游与路由」那张卡于是永久空白 ——
+// 而且失败是静默的，看的人不知道该找谁。凭据边界不该靠前端猜。
+func (h *Handler) StatusSummary() map[string]any {
+	return map[string]any{
+		"upstreams": h.upstreamSummary(),
+		"routing":   h.routingSummary(),
+	}
+}
+
 // routingSummary 面板只读快照：别名 / 降级 / 时段。
 func (h *Handler) routingSummary() map[string]any {
 	if h.cfg.Routes == nil {
@@ -217,11 +230,19 @@ func (h *Handler) routingSummary() map[string]any {
 // WorkBuddy 的账号数不在这里重复统计——pool 的 /status 已有一整套
 // accounts/total/healthy，这里只标出"存在哪些上游、各自什么形态"。
 func (h *Handler) upstreamSummary() []map[string]any {
+	// 账号数由条目自己给出。之前 workbuddy 条目不带 accounts，面板的路由卡只能
+	// 退回 /status 顶层的 total；而 StatusSummary（面板凭据那条路）不带 total，
+	// 结果池里明明有号、卡上显示 0。上游条目的账号数属于条目本身，不该靠调用方补。
+	poolTotal := 0
+	if h.cfg.Pool != nil {
+		poolTotal, _, _, _, _ = h.cfg.Pool.CountsDetailed()
+	}
 	out := []map[string]any{{
-		"name":    "workbuddy",
-		"kind":    "account-pool",
-		"label":   "WorkBuddy（账号池）",
-		"enabled": true,
+		"name":     "workbuddy",
+		"kind":     "account-pool",
+		"label":    "WorkBuddy（账号池）",
+		"enabled":  true,
+		"accounts": poolTotal,
 	}}
 	if h.cfg.Qoder != nil {
 		out = append(out, map[string]any{

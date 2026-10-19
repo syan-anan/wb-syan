@@ -165,6 +165,13 @@ func (p *Panel) claimCompensation(uid string, a *auth.Auth) (status string, cred
 		if after, qerr := p.cfg.Upstream.CompensationStatusOf(a); qerr == nil && after.Claimed != nil && *after.Claimed {
 			p.refreshAfterCompensation(uid, a)
 			log.Printf("panel: compensation uid=%s 领取响应异常但上游已确认到账", uid)
+			if credit > 0 && p.cfg.Journal != nil {
+				key := "comp|" + uid + "|" + before.EndTime
+				if before.EndTime == "" {
+					key = "comp|" + uid + "|" + time.Now().Format("2006-01-02")
+				}
+				p.cfg.Journal.RecordConfirmed(uid, "每日权益", credit, key)
+			}
 			return "claimed", credit, "已通过官方状态确认领取成功（原响应异常：" + claimErr.Error() + "）", true
 		}
 		return "unknown", 0, "领取未确认，已核对官方状态；稍后重试不会重复提交同一笔：" + claimErr.Error(), false
@@ -172,6 +179,14 @@ func (p *Panel) claimCompensation(uid string, a *auth.Auth) (status string, cred
 
 	p.refreshAfterCompensation(uid, a)
 	log.Printf("panel: compensation uid=%s 领取成功 credit=%d", uid, credit)
+	if credit > 0 && p.cfg.Journal != nil {
+		// 幂等键用本期结束时间：同一期权益无论重试多少次只记一笔。
+		key := "comp|" + uid + "|" + before.EndTime
+		if before.EndTime == "" {
+			key = "comp|" + uid + "|" + time.Now().Format("2006-01-02")
+		}
+		p.cfg.Journal.RecordConfirmed(uid, "每日权益", credit, key)
+	}
 	msg := "已领取权益"
 	if credit > 0 {
 		msg = "已领取 " + itoa(credit) + " 积分"

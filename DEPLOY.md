@@ -86,6 +86,19 @@ docker compose down
 docker compose up -d --build
 ```
 
+面板「更新与备份」页还能下**整库 zip**（config + state + usage + journal + 配额 + 模型缓存 + `auths/`），
+还原时整包传回；覆盖前自动把将被覆盖的文件复制进 `backups/restore-<时间戳>/`。
+**还原后必须重启**：运行中的进程仍持有旧 state，不重启会被它写回去。
+
+### 部署后自检
+
+只用 `curl`，不依赖 Go / Python；凭据只从环境变量读，脚本不碰磁盘上的配置文件；退出码 = 失败项数。
+
+```bash
+WBSY_BASE=http://127.0.0.1:18888 WBSY_TOKEN=<面板凭据> bash scripts/check_selftest.sh
+WBSY_BASE=http://127.0.0.1:18888 WBSY_TOKEN=<面板凭据> bash scripts/check_selftest.sh --live   # 三协议各真发一次
+```
+
 ## 7. 反向代理（可选）
 
 面板与 API 都是普通 HTTP。挂在 Nginx / Caddy 后面时注意：
