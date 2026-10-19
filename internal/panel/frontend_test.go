@@ -231,3 +231,23 @@ process.stdout.write(JSON.stringify({
 		t.Fatalf("expiry summary=%s want %s", out, want)
 	}
 }
+
+// TestMutableAssetsNoCache 页面 / 脚本 / 样式必须逐次回源。
+//
+// 为什么需要：这三样随二进制升级而变，又没有 ETag/Last-Modified 可校验。
+// 一旦被浏览器启发式缓存，升级后用户仍跑旧 JS——「侧栏点了没反应」这类
+// 服务端已修、客户端仍复现的问题，根因就在缓存。字体与图片是固定内容，
+// 仍走 immutable 长缓存（见 TestFontServed）。
+func TestMutableAssetsNoCache(t *testing.T) {
+	p := newTestPanel()
+	for _, path := range []string{"/panel/", "/panel/app.js", "/panel/theme.css"} {
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != 200 {
+			t.Fatalf("%s code=%d want 200", path, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+			t.Errorf("%s Cache-Control=%q want no-cache（升级后浏览器必须回源）", path, cc)
+		}
+	}
+}

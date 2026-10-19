@@ -599,13 +599,18 @@ if (navUL) {
     ['pointerup', 'pointercancel'].forEach(t => li.addEventListener(t, () => setTimeout(() => {
       if (navDragLi === li) { navDragLi = null; navPtrId = null; li.classList.remove('nav-dragging'); clearNavMarks(); }
     }, 0), { once: true }));
-    try { li.setPointerCapture(ev.pointerId); } catch (e) { /* 没有这个 API 也照常跑 */ }
+    // 注意：这里【不能】捕获指针。setPointerCapture 会把随后的 click 事件改派给
+    // 捕获元素（<li>），而切视图的处理器挂在里面的 <a> 上（app.js 末尾 .nav a onclick）
+    // —— 结果就是侧栏每次真鼠标点击都石沉大海。捕获推迟到确认进入拖动态之后再做。
   });
   navUL.addEventListener('pointermove', ev => {
     if (!navDragLi || ev.pointerId !== navPtrId) return;
     if (!navDragLi.classList.contains('nav-dragging')) {
       if (Math.abs(ev.clientY - navStartY) < 4) return;
       navDragLi.classList.add('nav-dragging');
+      // 确认是拖动（不是点击）之后才捕获指针：这样移动过程中指针飘出侧栏也不丢事件，
+      // 而普通点击永远不会被捕获，click 照旧落在 <a> 上。
+      try { navDragLi.setPointerCapture(ev.pointerId); } catch (e) { /* 老浏览器没有这个 API 也照常跑 */ }
     }
     ev.preventDefault();
     navMarkAt(ev.clientY);
