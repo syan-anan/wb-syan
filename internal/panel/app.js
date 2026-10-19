@@ -14,6 +14,19 @@ let keysCache = null, keyEditing = null;
 let accSort = localStorage.getItem('wb-syan.accsort') === 'realm' ? 'realm' : 'added';
 let refTimer = null;
 let agoTimer = null;   // 「x 秒前」每秒自走的定时器（纯前端，与 5s 轮询无关）
+// usGuard：用量请求的代次守卫。和 mdList 同一类病：文件尾部的 go() 会在首帧直接调 loadUsage，
+// 声明留在后半段就会碰 const 的 TDZ（Cannot access 'usGuard' before initialization），
+// 点 hash 直达 / 刷新 #usage 时整张图白掉。所以放在全局态这里。
+const usGuard = (function () {
+  let g = 0;
+  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
+})();
+// jnGuard：积分流水请求的代次守卫。和 usGuard / mdList 同一类病 —— 点 hash 直达或刷新
+// #journal 时，首帧 go() 就会调 loadJournal，声明留在后半段会碰 TDZ。
+const jnGuard = (function () {
+  let g = 0;
+  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
+})();
 
 const $ = id => document.getElementById(id);
 
@@ -2693,11 +2706,6 @@ function usRangeParams() {
   return q.join('&');
 }
 
-// usGuard：代次守卫。慢响应回来时代次已变（用户又切了窗口），直接丢弃这一次结果。
-const usGuard = (function () {
-  let g = 0;
-  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
-})();
 async function loadUsage() {
   const mine = usGuard.next();
   try {
@@ -4399,10 +4407,6 @@ enhanceDates();
 /* ── #5 积分流水 ───────────────────────────────────────────────────
    两套账分开列（confirmed / observed），顶部小计也分开给。任何把它们
    相加的数字都会把同一笔钱数两遍——这里连一个「合计」字段都不给。 */
-const jnGuard = (function () {
-  let g = 0;
-  return { next: function () { g += 1; return g; }, cur: function () { return g; } };
-})();
 let jnPage = 1, jnSize = 50, jnTotal = 0;
 function jnNick(uid) {
   const list = (overviewData && overviewData.accounts) || [];
