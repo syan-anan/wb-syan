@@ -697,7 +697,6 @@ if ($('navSetBtn')) {
 applyNavPrefs();
 
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
-go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
 
 /* ── 错误诊断（三层）────────────────────────────────────────────────
    数据源 GET /panel/api/diagnose：服务端从日志环里还原最近的上游错误行。
@@ -1876,7 +1875,6 @@ async function checkAuthGate() {
   try { await api('overview'); }
   catch (e) { if (String(e.message).includes('密钥') || String(e.message).includes('api_key')) return; }
 }
-start();
 
 /* ── 积分任务 ─────────────────────────────────────────────────────── */
 let taskUID = null;
@@ -4707,3 +4705,11 @@ if ($('importInfoFile')) {
   };
 }
 if ($('btnMtReload')) $('btnMtReload').onclick = loadMaintenance;
+
+/* 首屏渲染与轮询启动必须排在所有顶层声明之后。go() 会同步调 loadJournal / loadLogs /
+   renderPackages 等，这些函数引用的 jnPage、logCh、pkLastData、grDefs、mtData 等变量声明
+   在文件后半段 —— 带着钥匙刷新时就是 Cannot access 'jnPage' before initialization。
+   更阴的是这些抛错被 async 函数的 try/catch 吞掉，pageerror 里看不见，只在页面上留一行
+   「查询失败」。所以这两句放最后，而不是原地打补丁。 */
+go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
+start();
