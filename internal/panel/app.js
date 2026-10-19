@@ -14,6 +14,9 @@ let keysCache = null, keyEditing = null;
 let accSort = localStorage.getItem('wb-syan.accsort') === 'realm' ? 'realm' : 'added';
 let refTimer = null;
 let agoTimer = null;   // 「x 秒前」每秒自走的定时器（纯前端，与 5s 轮询无关）
+// dragHoldSince 最近一次拖拽起手的时刻。收尾事件（dragend / pointerup）万一走丢，
+// 守卫就会永久挡住轮询、整块面板冻住不刷新。所以守卫带超时自愈，绝不永久挡。
+let dragHoldSince = 0;
 // usGuard：用量请求的代次守卫。和 mdList 同一类病：文件尾部的 go() 会在首帧直接调 loadUsage，
 // 声明留在后半段就会碰 const 的 TDZ（Cannot access 'usGuard' before initialization），
 // 点 hash 直达 / 刷新 #usage 时整张图白掉。所以放在全局态这里。
@@ -591,7 +594,11 @@ if (navUL) {
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
     navPtrId = ev.pointerId;
     navStartY = ev.clientY;
-    navDragLi = li;
+    navDragLi = li; dragHoldSince = Date.now();
+    // 同账号行：捕获指针的节点被换掉的话，pointerup 回不到 navUL 上，轮询会冻住。
+    ['pointerup', 'pointercancel'].forEach(t => li.addEventListener(t, () => setTimeout(() => {
+      if (navDragLi === li) { navDragLi = null; navPtrId = null; li.classList.remove('nav-dragging'); clearNavMarks(); }
+    }, 0), { once: true }));
     try { li.setPointerCapture(ev.pointerId); } catch (e) { /* 没有这个 API 也照常跑 */ }
   });
   navUL.addEventListener('pointermove', ev => {
@@ -1045,7 +1052,12 @@ function accClearMarks() {
 accBodyEl.addEventListener('dragstart', ev => {
   const tr = ev.target.closest && ev.target.closest('tr[data-uid]');
   if (!tr) { ev.preventDefault(); return; }
-  accDragRow = tr;
+  accDragRow = tr; dragHoldSince = Date.now();
+  // 兜底：这一行要是被重画换掉，dragend 冒泡不到 accBody 上，守卫就会永久卡住。
+  // 挂在行自己身上，延一个宏任务再清，给正常收尾（提交重排）让路。
+  tr.addEventListener('dragend', () => setTimeout(() => {
+    if (accDragRow === tr) { accDragRow = null; tr.classList.remove('dragging'); accClearMarks(); }
+  }, 0), { once: true });
   tr.classList.add('dragging');
   try {
     ev.dataTransfer.effectAllowed = 'move';
@@ -1820,10 +1832,24 @@ $('btnRefresh').onclick = async () => {
 };
 
 /* ── 轮询 ─────────────────────────────────────────────────────────── */
+// dragHoldRelease：强制结束任何"卡住"的拖拽状态。只清状态、不提交重排——
+// 提交与否由各自的收尾函数负责，这里只保证轮询一定能恢复。
+function dragHoldRelease() {
+  accDragRow = null;
+  navDragLi = null;
+  document.querySelectorAll('.dragging, .nav-dragging, .drop-before, .drop-after')
+    .forEach(el => el.classList.remove('dragging', 'nav-dragging', 'drop-before', 'drop-after'));
+}
+
 function refreshVisible() {
   // 拖动进行中绝不重画：5s 轮询会把正在拖的那一行从 DOM 里换掉，dragend
   // 拿到的就成了脱离文档的旧节点，重排静默失败（就是「要拖好几次才过去」）。
-  if (accDragRow || navDragLi) return;
+  if (accDragRow || navDragLi) {
+    // 6 秒还没收尾 = 事件走丢了（拖到一半标签页被切走，或被重画换掉的行把
+    // dragend 带走了）。宁可多画一次，也绝不让面板永久冻住。
+    if (Date.now() - dragHoldSince < 6000) return;
+    dragHoldRelease();
+  }
   if (view === 'accounts') loadOverview(true);
   else if (view === 'logs') loadLogs();
   else if (view === 'taskscenter') reattachQueueView();
@@ -1839,6 +1865,10 @@ function start() {
   // 「x 秒前」每秒自走：与整表 5s 轮询解耦，服务端一次请求都不多发。
   if (agoTimer) clearInterval(agoTimer);
   agoTimer = setInterval(tickAgo, 1000);
+  // 切走标签页 / 窗口失焦时收尾事件可能永远收不到：先放开拖拽状态，
+  // 免得用户盯着一块不再刷新的面板。
+  addEventListener('blur', dragHoldRelease);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) dragHoldRelease(); });
   tickAgo();
   checkAuthGate();
 }
