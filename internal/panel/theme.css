@@ -43,7 +43,7 @@
   --bad: #ff8fa0;
   --bad-soft: rgba(255,120,140,.18);
   --shadow: 0 18px 50px rgba(0,0,0,.45);
-  --mono: "SyanRound", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --mono: "SyanRound", "Microsoft YaHei", "PingFang SC", sans-serif;
   --sans: "SyanRound", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
   /* syanUI 原生令牌 */
@@ -79,7 +79,7 @@
   --bad: #c02636;
   --bad-soft: rgba(255,215,220,.8);
   --shadow: 0 18px 50px rgba(90,70,150,.14);
-  --mono: "SyanRound", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --mono: "SyanRound", "Microsoft YaHei", "PingFang SC", sans-serif;
   --sans: "SyanRound", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 
   --sub: rgba(29,29,43,.56);
@@ -1259,4 +1259,10 @@ html[data-view="packages"] .pk-stats { grid-template-columns: repeat(4, minmax(0
 /* ── 字体全覆盖：表单控件默认不继承 body，这里统一成面板字体。 ── */
 button, input, select, textarea, optgroup, option {
   font-family: inherit;
+}
+
+
+/* ── 等宽区也走面板字体：日志 / 客户端接入 / 设置里的 pre、code 不再回落系统等宽。 ── */
+pre, code, .mono, .mono * {
+  font-family: "SyanRound", "Microsoft YaHei", "PingFang SC", sans-serif !important;
 }
