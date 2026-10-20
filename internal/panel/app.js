@@ -2632,6 +2632,20 @@ function renderUsageChart(series) {
     return;
   }
 
+  // 同一时刻可能既有小时桶又有日桶（切到「全部历史」时），或者重复桶：
+  // 不合并的话它们会画在同一个 x 上，看起来就是一堆柱子叠在一起。
+  const byTime = new Map();
+  for (const p of pts) {
+    const cur = byTime.get(p.t);
+    if (cur) {
+      cur.pt += p.pt; cur.ct += p.ct; cur.tt += p.tt; cur.req += p.req;
+    } else {
+      byTime.set(p.t, { t: p.t, pt: p.pt, ct: p.ct, tt: p.tt, req: p.req });
+    }
+  }
+  pts.length = 0;
+  for (const v of Array.from(byTime.values()).sort((a, b) => a.t - b.t)) pts.push(v);
+
   const W = 760, H = 180, PL = 52, PR = 12, PT = 12, PB = 30;
   const iw = W - PL - PR, ih = H - PT - PB;
 
@@ -2648,7 +2662,9 @@ function renderUsageChart(series) {
   // step = 一个柱位的时间宽度。原来域两端不留白：单点（或几个同一时刻的桶）
   // 时 span 退化成 1ms，第一根柱子正好压在 x=PL 上，把 y 轴的 9.14M/6.86M
   // 那几个刻度糊成一团。现在两端各让半个柱位，点少的时候图自己往中间收。
-  let step = pts.length > 1 ? Math.max(minGap, span / (pts.length - 1)) : 1;
+  // 柱位按**最小真实间隔**算，而不是平均间隔：早期数据密、后期稀疏时，
+  // 用平均间隔会把密集区的柱子画得比间距还宽，直接叠在一起。
+  let step = pts.length > 1 ? minGap : (span > 0 ? span : 1);
   if (!(step > 0)) step = 1;
   const dspan = Math.max(1, span + step);
   const d0 = t0 - step / 2;

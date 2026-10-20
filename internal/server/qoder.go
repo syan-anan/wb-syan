@@ -114,6 +114,24 @@ func (h *Handler) qoderChat(w http.ResponseWriter, r *http.Request, body []byte,
 	tap := newQoderUsageTap(rc, t0, func(p, c, cached, ttft, total int64, ok bool) {
 		// 记录 slug 而不是 key：用量页要跟 /v1/models 显示的名字一致。
 		h.recordQoderUsage(realm, "", usagePrefix+modelSlug, p, c, cached, ttft, total, ok)
+		// 对话流水：复用 WorkBuddy 的表格行，面板「运行日志」与「Qoder 日志」
+		// 两页都能按同一套列解析（模型 / 模式 / 状态 / 账号 / TTFB / tok / 速率）。
+		mode := "sync"
+		if stream {
+			mode = "stream"
+		}
+		acct := "qoder-" + realm
+		// usage 缺失时传 -1：表格里显示 "-"，而不是让人误读成「输出 0 token」。
+		toks := int(c)
+		if toks == 0 && p == 0 {
+			toks = -1
+		}
+		logChatRow(
+			time.Duration(ttft)*time.Millisecond,
+			time.Duration(total)*time.Millisecond,
+			usagePrefix+modelSlug, mode, acct, "", 200,
+			toks, 0, false,
+		)
 	})
 	pipeUpstream(w, tap, stream)
 }
