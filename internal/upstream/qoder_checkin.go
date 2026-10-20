@@ -270,3 +270,44 @@ func (h *QoderCheckinHistory) RecentDays(today time.Time, n int) []map[string]an
 	})
 	return out
 }
+
+
+// QoderCampaignRow 活动表里的一行（跨账号汇总）。
+type QoderCampaignRow struct {
+	Account     string `json:"account"`
+	UID         string `json:"uid"`
+	Realm       string `json:"realm"`
+	CampaignID   string `json:"campaign_id"`
+	CampaignKey  string `json:"campaign_key"`
+	ActionType   string `json:"action_type"`
+	ClaimStatus  string `json:"claim_status"`
+	StartAt      int64  `json:"start_at,omitempty"`
+	EndAt        int64  `json:"end_at,omitempty"`
+}
+
+// CampaignsAll 拉取所有账号的活动列表；单个账号失败不阻塞其他账号。
+func (p *QoderPool) CampaignsAll(ctx context.Context) []QoderCampaignRow {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	clients := append([]*QoderClient(nil), p.clients...)
+	p.mu.Unlock()
+
+	out := make([]QoderCampaignRow, 0, 8)
+	for _, c := range clients {
+		li, err := c.Campaigns(ctx)
+		if err != nil || li == nil {
+			continue
+		}
+		for _, x := range li.Campaigns {
+			out = append(out, QoderCampaignRow{
+				Account: c.Nickname, UID: c.UID, Realm: c.Realm,
+				CampaignID: x.CampaignID, CampaignKey: x.CampaignKey,
+				ActionType: x.ActionType, ClaimStatus: x.ClaimStatus,
+				StartAt: x.StartAt, EndAt: x.EndAt,
+			})
+		}
+	}
+	return out
+}

@@ -63,8 +63,30 @@ type QoderClient struct {
 	ModelBase string
 	TokenPath string
 
-	mu  sync.Mutex
-	tok *QoderToken
+	// Realm 决定走哪条链路："cn" = gateway.qoder.com.cn 的 COSY 签名，
+	// 其它值 = api2-v2.qoder.sh 的 OpenAI 原生接口。
+	Realm string
+	// AccessToken 非空时直接用它（OAuth 设备令牌），跳过 PAT 交换。
+	AccessToken string
+	// Disabled 手工停用，选号时跳过。
+	Disabled bool
+	// CNBase 覆盖国内版网关（测试用）；空 = 官方地址。
+	CNBase string
+	// UID/Nickname/UserType/OrgID/OrgName 参与 COSY 身份体与设备指纹派生，
+	// 国内版必须与账号真实信息一致，否则上游拒绝。
+	UID      string
+	Nickname string
+	UserType string
+	OrgID    string
+	OrgName  string
+
+	mu           sync.Mutex
+	tok          *QoderToken
+	refreshToken string
+
+	cosyMu    sync.Mutex
+	cosy      *cosySession
+	cosyToken string
 }
 
 // NewQoderClient 构造客户端。tokenPath 非空时 token 落盘，重启不必重新交换。
@@ -171,6 +193,10 @@ func (c *QoderClient) RefreshJobToken(ctx context.Context, refresh string) (*Qod
 // 为什么按这个顺序：PAT 是最贵的一步（要人工生成），refresh token 能用就别动它；
 // 只有 refresh 也过期才回去用 PAT。磁盘缓存只是省一次网络往返。
 func (c *QoderClient) Token(ctx context.Context) (string, error) {
+	// OAuth 设备令牌本身就是推理凭证，没有交换环节。
+	if c.AccessToken != "" {
+		return c.AccessToken, nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -253,6 +279,11 @@ func (c *QoderClient) saveToken(tok *QoderToken) {
 // 返回体与 workbuddy 的 ChatStreamContext 同构（rc/status/body/err），
 // 这样 handler 侧可以走同一套写回逻辑（流式逐帧、非流式整包）。
 func (c *QoderClient) ChatStream(ctx context.Context, body []byte) (io.ReadCloser, int, []byte, error) {
+	// 国内版走 COSY 签名 + SSE 信封，与国际版的 OpenAI 原生接口完全分离。
+	// 账号池只看到这一个入口，不需要知道 Realm。
+	if c.Realm == "cn" {
+		return c.qoderCNChat(ctx, body, qoderModelKeyFromBody(body))
+	}
 	token, err := c.Token(ctx)
 	if err != nil {
 		return nil, 0, nil, err
@@ -281,6 +312,18 @@ func (c *QoderClient) ChatStream(ctx context.Context, body []byte) (io.ReadClose
 	return nil, resp.StatusCode, raw, nil
 }
 
+// qoderModelKeyFromBody 取请求里的裸模型名；国内版用它填 x-model-key 与
+// model_config.key 两处，缺一处上游都会回落到默认模型。
+func qoderModelKeyFromBody(body []byte) string {
+	var req struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &req) == nil && req.Model != "" {
+		return req.Model
+	}
+	return "auto"
+}
+
 // truncateText 截断长文本用于日志/错误（包内已有 truncate，这里换名避免重复定义）。
 func truncateText(s string, n int) string {
 	if len(s) <= n {
@@ -295,10 +338,26 @@ func truncateText(s string, n int) string {
 
 // QoderAccount 一个 Qoder 账号。TokenFile 为空时按序号自动放到 dir 下。
 type QoderAccount struct {
-	Name string
-	PAT  string
+	Name string `json:"name"`
+	PAT  string `json:"personal_access_token"`
 	// TokenFile 可选：显式指定 token 缓存路径（多账号必须互不相同）。
-	TokenFile string
+	TokenFile string `json:"token_file,omitempty"`
+
+	// AccessToken 是 OAuth 设备授权拿到的 dt- 令牌，与 PAT 二选一。
+	// 实测它可以直接用于推理（COSY 签名），不需要再换 jobToken。
+	AccessToken string `json:"access_token,omitempty"`
+	// Realm 为空或 "intl" 走国际版；"cn" 走国内版 COSY 链路。
+	Realm string `json:"realm,omitempty"`
+	// UID/Nickname/UserType/OrgID/OrgName 只有国内版需要，参与身份体与设备指纹。
+	UID      string `json:"uid,omitempty"`
+	Nickname string `json:"nickname,omitempty"`
+	UserType string `json:"user_type,omitempty"`
+	OrgID    string `json:"org_id,omitempty"`
+	OrgName  string `json:"org_name,omitempty"`
+	// Disabled 手工停用：仍在池里但不参与选号（区别于冷却）。
+	Disabled bool `json:"disabled,omitempty"`
+	// Quota 只在对账/展示时填，落盘时为空。
+	Quota *QoderQuota `json:"quota,omitempty"`
 }
 
 // QoderPool 多账号 Qoder 上游。
@@ -333,7 +392,9 @@ func NewQoderPool(accounts []QoderAccount, tokenDir string) *QoderPool {
 	names := make([]string, 0, len(accounts))
 	for i, a := range accounts {
 		pat := strings.TrimSpace(a.PAT)
-		if pat == "" {
+		// OAuth 账号只有设备令牌（dt-），没有 PAT —— 两者任一即可入池。
+		// 这里只挡「两个都空」的脏数据，否则授权登录加进来的号会被静默丢掉。
+		if pat == "" && strings.TrimSpace(a.AccessToken) == "" {
 			continue
 		}
 		path := a.TokenFile
@@ -344,7 +405,21 @@ func NewQoderPool(accounts []QoderAccount, tokenDir string) *QoderPool {
 			}
 			path = filepath.Join(tokenDir, "qoder_token_"+sanitizeFilePart(name)+".json")
 		}
-		clients = append(clients, NewQoderClient(pat, path))
+		cl := NewQoderClient(pat, path)
+		cl.Realm = a.Realm
+		cl.AccessToken = a.AccessToken
+		cl.Disabled = a.Disabled
+		if a.Realm == "cn" {
+			// 国内版的 openapi 与推理网关都在独立域名上，不能复用国际版默认值。
+			cl.OpenAPI = "https://openapi.qoder.com.cn"
+			cl.ModelBase = qoderCNBase
+		}
+		cl.UID = a.UID
+		cl.Nickname = a.Nickname
+		cl.UserType = a.UserType
+		cl.OrgID = a.OrgID
+		cl.OrgName = a.OrgName
+		clients = append(clients, cl)
 		name := strings.TrimSpace(a.Name)
 		if name == "" {
 			name = fmt.Sprintf("qoder-%d", len(clients))
@@ -352,7 +427,13 @@ func NewQoderPool(accounts []QoderAccount, tokenDir string) *QoderPool {
 		names = append(names, name)
 	}
 	if len(clients) == 0 {
-		return nil
+		// 返回空池而不是 nil：面板可以在运行期往空池里加账号，
+		// 调用方的指针因此永远不需要替换。
+		return &QoderPool{
+			sticky:    map[string]int{},
+			cooling:   map[int]time.Time{},
+			stickyTTL: qoderStickyTTL,
+		}
 	}
 	return &QoderPool{
 		clients:   clients,
@@ -401,28 +482,66 @@ func (p *QoderPool) Names() []string {
 
 // pickLocked 选一个可用账号下标：粘性命中优先，否则轮询跳过冷却中的账号。
 // 全部冷却时退化为轮询（宁可试一次也不直接失败）。调用方需持 p.mu。
-func (p *QoderPool) pickLocked(stickyKey string, now time.Time) int {
+// realmLabel 把内部区域名翻成给人看的说法。
+func realmLabel(realm string) string {
+	if realm == "cn" {
+		return "国内"
+	}
+	if realm == "intl" {
+		return "国际"
+	}
+	return "全部"
+}
+
+// qoderRealmMatch 账号是否属于指定区；realm 为空表示全池。
+// 旧账号 Realm 为空按国际版处理（历史默认）。
+func (p *QoderPool) qoderRealmMatch(idx int, realm string) bool {
+	if realm == "" {
+		return true
+	}
+	r := p.clients[idx].Realm
+	if realm == "cn" {
+		return r == "cn"
+	}
+	return r != "cn"
+}
+
+func (p *QoderPool) pickLocked(stickyKey string, now time.Time, realm string) int {
 	n := len(p.clients)
 	if stickyKey != "" {
 		if idx, ok := p.sticky[stickyKey]; ok && idx < n {
 			if until, cooling := p.cooling[idx]; !cooling || !now.Before(until) {
-				return idx
+				if !p.clients[idx].Disabled && p.qoderRealmMatch(idx, realm) {
+					return idx
+				}
 			}
 		}
 	}
 	start := p.rr % n
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
+		if p.clients[idx].Disabled {
+			continue
+		}
+		if !p.qoderRealmMatch(idx, realm) {
+			continue
+		}
 		if until, cooling := p.cooling[idx]; cooling && now.Before(until) {
 			continue
 		}
 		p.rr = idx + 1
 		return idx
 	}
-	// 全部冷却：轮询兜底（账号可能已经恢复，试一次比直接失败便宜）。
-	idx := p.rr % n
-	p.rr = idx + 1
-	return idx
+	// 全部冷却：只在同区内轮询兜底。跨区借用会让 qodercn: 跑到国际站，
+	// 那比直接失败更糟——请求会被上游拒绝，还会污染另一个区的冷却状态。
+	for i := 0; i < n; i++ {
+		idx := (start + i) % n
+		if !p.clients[idx].Disabled && p.qoderRealmMatch(idx, realm) {
+			p.rr = idx + 1
+			return idx
+		}
+	}
+	return -1
 }
 
 // bindLocked 记录粘性绑定，并做一次懒惰清理防 map 无限增长。
@@ -442,14 +561,18 @@ func (p *QoderPool) bindLocked(stickyKey string, idx int, now time.Time) {
 //
 // 失败标记：只有"账号级"失败才冷却（401/403/429/5xx）。400 类参数错误换号
 // 也不会成功，冷却它只会白白缩小可用池。
-func (p *QoderPool) ChatStream(ctx context.Context, body []byte, stickyKey string) (io.ReadCloser, int, []byte, error) {
+func (p *QoderPool) ChatStream(ctx context.Context, body []byte, stickyKey, realm string) (io.ReadCloser, int, []byte, error) {
 	if p == nil || len(p.clients) == 0 {
 		return nil, 0, nil, fmt.Errorf("qoder: 未配置账号")
 	}
 	now := time.Now()
 	p.mu.Lock()
-	idx := p.pickLocked(stickyKey, now)
+	idx := p.pickLocked(stickyKey, now, realm)
 	p.mu.Unlock()
+	if idx < 0 {
+		return nil, http.StatusServiceUnavailable, nil,
+			fmt.Errorf("qoder: %s 区没有可用账号", realmLabel(realm))
+	}
 
 	rc, status, respBody, err := p.clients[idx].ChatStream(ctx, body)
 	if rc != nil {
@@ -470,4 +593,97 @@ func (p *QoderPool) ChatStream(ctx context.Context, body []byte, stickyKey strin
 		p.mu.Unlock()
 	}
 	return nil, status, respBody, err
+}
+
+// Replace 用新的账号集合原地重建客户端列表。
+// 调用方（handler）持有同一个 *QoderPool，不需要换指针；粘性与冷却全部重置，
+// 因为账号下标已经变了，旧绑定指向的可能是另一个号。
+func (p *QoderPool) Replace(accounts []QoderAccount, tokenDir string) {
+	if p == nil {
+		return
+	}
+	np := NewQoderPool(accounts, tokenDir)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clients = np.clients
+	p.names = np.names
+	p.rr = 0
+	p.sticky = map[string]int{}
+	p.cooling = map[int]time.Time{}
+}
+
+// Accounts 返回当前账号的副本（面板展示用，PAT 已打码）。
+func (p *QoderPool) Accounts() []QoderAccount {
+	if p == nil {
+		return nil
+	}
+	// 先拷一份再解锁：Quota 会发网络请求，持锁期间做这件事会把选号一起卡住。
+	p.mu.Lock()
+	clients := append([]*QoderClient(nil), p.clients...)
+	names := append([]string(nil), p.names...)
+	p.mu.Unlock()
+
+	out := make([]QoderAccount, 0, len(clients))
+	for i, c := range clients {
+		name := ""
+		if i < len(names) {
+			name = names[i]
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		q := c.Quota(ctx)
+		cancel()
+		out = append(out, QoderAccount{
+			Name:        name,
+			PAT:         maskPAT(c.PAT),
+			AccessToken: maskPAT(c.AccessToken),
+			Realm:       c.Realm,
+			UID:         c.UID,
+			Nickname:    c.Nickname,
+			UserType:    c.UserType,
+			Disabled:    c.Disabled,
+			Quota:       &q,
+		})
+	}
+	return out
+}
+
+func maskPAT(p string) string {
+	if len(p) <= 12 {
+		if p == "" {
+			return ""
+		}
+		return p[:min(4, len(p))] + "***"
+	}
+	return p[:8] + "***" + p[len(p)-6:]
+}
+
+// TestAccount 对指定账号发一条最小请求，验证凭据与链路。
+// 只读语义：发一条 "ping"，读掉响应，不写任何状态。
+func (p *QoderPool) TestAccount(ctx context.Context, name string) error {
+	if p == nil {
+		return fmt.Errorf("qoder: 未配置账号")
+	}
+	p.mu.Lock()
+	var c *QoderClient
+	for i, cl := range p.clients {
+		if i < len(p.names) && p.names[i] == name {
+			c = cl
+			break
+		}
+	}
+	p.mu.Unlock()
+	if c == nil {
+		return fmt.Errorf("没有叫 %q 的账号", name)
+	}
+	body := []byte(`{"model":"auto","messages":[{"role":"user","content":"ping"}],"stream":false}`)
+	rc, status, _, err := c.ChatStream(ctx, body)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(rc, 8192))
+	if status != http.StatusOK {
+		return fmt.Errorf("上游返回 %d", status)
+	}
+	return nil
 }

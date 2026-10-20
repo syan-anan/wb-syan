@@ -48,7 +48,7 @@ func TestQoderChatNotConfigured(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"qoder:auto"}`))
-	h.qoderChat(rec, req, []byte(`{"model":"qoder:auto"}`), "auto", false)
+	h.qoderChat(rec, req, []byte(`{"model":"qoder:auto"}`), "auto", "", false)
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", rec.Code)
@@ -64,7 +64,7 @@ func TestQoderChatEmptyModel(t *testing.T) {
 	h.cfg.Qoder = upstream.NewQoderPool([]upstream.QoderAccount{{PAT: "pt"}}, "")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
-	h.qoderChat(rec, req, []byte(`{"model":"qoder:"}`), "", false)
+	h.qoderChat(rec, req, []byte(`{"model":"qoder:"}`), "", "", false)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
@@ -73,16 +73,22 @@ func TestQoderChatEmptyModel(t *testing.T) {
 
 // qoderModelEntries 必须带 qoder: 前缀，且 owned_by 标记为 qoder。
 func TestQoderModelEntriesPrefix(t *testing.T) {
-	entries := qoderModelEntries()
+	h := &Handler{}
+	entries := h.qoderModelEntries()
 	if len(entries) == 0 {
 		t.Fatal("空列表")
 	}
 	for _, e := range entries {
 		id, _ := e["id"].(string)
-		if !strings.HasPrefix(id, qoderModelPrefix) {
+		// 双区前缀：qodercn: / qoderglobal:（qoder: 作为兼容）。任一即可。
+		if !strings.HasPrefix(id, qoderCNPrefix) &&
+			!strings.HasPrefix(id, qoderGlobalPrefix) &&
+			!strings.HasPrefix(id, qoderModelPrefix) {
 			t.Fatalf("id 缺前缀: %v", e["id"])
 		}
-		if e["owned_by"] != "qoder" {
+		switch e["owned_by"] {
+		case "qoder", "qoder-cn", "qoder-intl":
+		default:
 			t.Fatalf("owned_by = %v", e["owned_by"])
 		}
 	}

@@ -88,6 +88,27 @@ type Config struct {
 	QoderCheckin func() ([]upstream.QoderClaimResult, error)
 	// QoderHistory 返回连续签到天数、累计天数、最近 30 天标记。
 	QoderHistory func() (current, total int, recent []map[string]any)
+	// Qoder 账号运行期管理（nil = 只读，不提供加号）。
+	// 四个回调由 main 注入，读写 data/qoder_accounts.json 并热替换内存池。
+	QoderAccounts func() []upstream.QoderAccount
+	QoderAdd      func(upstream.QoderAccount) error
+	QoderDelete   func(name string) error
+	QoderVerify   func(pat, realm, uid, nickname, userType string) (upstream.QoderIdentity, error)
+	// QoderSetDisabled 停用/启用账号；QoderTest 单号试跑；QoderExport 导出凭据。
+	QoderSetDisabled func(name string, disabled bool) error
+	QoderTest        func(name string) error
+	QoderExport      func() ([]byte, error)
+	// QoderCatalogFn 取模型目录（优先动态，失败回落快照）。
+	QoderCatalogFn func(realm string) []upstream.QoderCatalogEntry
+	// Qoder 设备授权登录（OAuth PKCE）：start 出链接，poll 拿账号。
+	QoderOAuthStart func(realm string) (state, authURL string, err error)
+	// QoderPro 领取一次 Pro 升级包（逐账号，幂等）。
+	QoderPro func() []upstream.QoderProResult
+	// QoderCampaigns 拉取所有账号的活动列表（签到/福利任务表）。
+	QoderCampaigns func() []upstream.QoderCampaignRow
+	// QoderLocalScan 只读扫描本机客户端凭证（Windows）。
+	QoderLocalScan func() ([]upstream.QoderAccount, error)
+	QoderOAuthPoll func(state string) (status string, acct *upstream.QoderAccount, msg string)
 	// ListBackups 返回配置备份文件名（新的在前）。
 	ListBackups func() []string
 	// RestoreBackup 用指定备份覆盖当前配置。恢复后需要重启才能完全生效。
@@ -311,6 +332,23 @@ func (p *Panel) routes() {
 	// Qoder 签到状态与手动触发（另一条上游，不与 WorkBuddy 签到混在一起）。
 	p.mux.HandleFunc("GET /panel/api/qoder/checkin", p.withAuth(p.qoderCheckinStatus))
 	p.mux.HandleFunc("POST /panel/api/qoder/checkin", p.withAuth(p.qoderCheckinRun))
+	// Qoder 账号管理：列表 / 新增 / 删除 / 单测凭据。写盘后在内存池里热替换。
+	p.mux.HandleFunc("GET /panel/api/qoder/accounts", p.withAuth(p.qoderAccountsList))
+	p.mux.HandleFunc("POST /panel/api/qoder/accounts/disable", p.withAuth(p.qoderAccountDisable))
+	p.mux.HandleFunc("POST /panel/api/qoder/accounts/test", p.withAuth(p.qoderAccountTest))
+	p.mux.HandleFunc("GET /panel/api/qoder/accounts/export", p.withAuth(p.qoderAccountExport))
+	p.mux.HandleFunc("GET /panel/api/qoder/overview", p.withAuth(p.qoderOverview))
+	p.mux.HandleFunc("POST /panel/api/qoder/accounts", p.withAuth(p.qoderAccountAdd))
+	p.mux.HandleFunc("POST /panel/api/qoder/accounts/delete", p.withAuth(p.qoderAccountDelete))
+	p.mux.HandleFunc("POST /panel/api/qoder/verify", p.withAuth(p.qoderAccountVerify))
+	p.mux.HandleFunc("GET /panel/api/qoder/usage", p.withAuth(p.qoderUsage))
+	p.mux.HandleFunc("GET /panel/api/qoder/models", p.withAuth(p.qoderModels))
+	p.mux.HandleFunc("POST /panel/api/qoder/pro", p.withAuth(p.qoderProClaim))
+	p.mux.HandleFunc("GET /panel/api/qoder/campaigns", p.withAuth(p.qoderCampaigns))
+	p.mux.HandleFunc("GET /panel/api/qoder/local", p.withAuth(p.qoderLocalScan))
+	p.mux.HandleFunc("POST /panel/api/qoder/local/import", p.withAuth(p.qoderLocalImport))
+	p.mux.HandleFunc("POST /panel/api/qoder/oauth/start", p.withAuth(p.qoderOAuthStart))
+	p.mux.HandleFunc("GET /panel/api/qoder/oauth/poll", p.withAuth(p.qoderOAuthPoll))
 	// 配置备份列表与恢复（写盘前自动备份，见 cmd/server/backup.go）。
 	p.mux.HandleFunc("GET /panel/api/backups", p.withAuth(p.backupsList))
 	p.mux.HandleFunc("POST /panel/api/backups/restore", p.withAuth(p.backupRestore))

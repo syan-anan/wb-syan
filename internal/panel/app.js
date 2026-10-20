@@ -476,9 +476,15 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', journal: '积分流水', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', qoder: 'Qoder', apikeys: '密钥管理', config: '配置', maint: '更新与备份', logs: '运行日志', diagnose: '错误诊断' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', journal: '积分流水', taskscenter: '任务中心', growth: '成长中心', models: '模型与档位', qoder: 'Qoder', 'qoder-accounts': 'Qoder 账号', 'qoder-tasks': 'Qoder 签到与任务', 'qoder-models': 'Qoder 模型', 'qoder-usage': 'Qoder 用量', 'qoder-logs': 'Qoder 日志', 'qoder-clients': 'Qoder 客户端接入', 'qoder-settings': 'Qoder 设置', apikeys: '密钥管理', config: '配置', maint: '更新与备份', logs: '运行日志', diagnose: '错误诊断' };
 function go(v) {
+  // 组头本身不是页面：落到第一个子页。
+  if (v === 'qoder') v = 'qoder-accounts';
   view = v;
+  if (v.indexOf('qoder-') === 0) {
+    const g = document.querySelector('.nav-group');
+    if (g) g.classList.add('expanded');
+  }
   // data-view 落到 <html> 上：样式用它门控「哪些页面显示顶部总览卡」（#9），
   // 不必给每个视图手写 display:none。
   document.documentElement.dataset.view = v;
@@ -490,7 +496,12 @@ function go(v) {
   if (v === 'accounts') loadCompensation();
   if (v === 'models' && !$('mdBody').children.length) loadModels();
   if (v === 'models') loadRoutes();
-  if (v === 'qoder') loadQoderPage();
+  if (v === 'qoder-accounts') { loadQoderPage(); loadQoderAccounts(); loadQoderOverview(); }
+  if (v === 'qoder-tasks') { loadQoderPage(); loadQoderTasks(); }
+  if (v === 'qoder-models') loadQoderModels();
+  if (v === 'qoder-usage') loadQoderUsage();
+  if (v === 'qoder-logs') loadQoderLogs();
+  if (v === 'qoder-clients') loadQoderClients();
   if (v === 'apikeys') loadKeys();
   if (v === 'config') { loadConfig(); loadBackups(); }
   if (v === 'logs') loadLogs();
@@ -4048,42 +4059,100 @@ function renderQoder(d) {
 async function loadQoder() {
   try { renderQoder(await api('qoder/checkin')); } catch (e) { /* 未配置时静默 */ }
 }
-async function loadQoderModels() {
+let qmRealm = 'cn';
+let qmFilter = 'all';
+let qmCache = [];
+
+function qmApplyFilter(list) {
+  return list.filter(function (m) {
+    if (qmFilter === 'free') return !!m.is_free || m.price_rate === 0;
+    if (qmFilter === 'vision') return !!m.vision;
+    if (qmFilter === 'reasoning') return !!m.reasoning;
+    if (qmFilter === 'new') return !!m.is_new;
+    return true;
+  });
+}
+
+function qmRender() {
   const tb = $('qdModelBody');
   if (!tb) return;
-  tb.innerHTML = '<tr><td colspan="5"><div class="empty">正在查询…</div></td></tr>';
-  try {
-    if (!mdList.length) {
-      const d = await api('models');
-      mdList = d.models || [];
-    }
-    const list = mdList.filter(m => String(m.id || '').indexOf('qoder:') === 0);
-    $('qdModelNote').textContent = list.length ? list.length + ' 个模型 · 前缀 qoder:' : '上游未返回 Qoder 模型';
-    if (!list.length) {
-      tb.innerHTML = '<tr><td colspan="5"><div class="empty"><div class="big">没有 Qoder 模型</div>' +
-        'config.json 的 qoder 段未配置凭证，或上游目录里没有带 qoder: 前缀的模型</div></td></tr>';
-      return;
-    }
-    const keys = Object.keys(mdProbes || {});
-    tb.innerHTML = list.map(m => {
-      const pk = keys.filter(k => k === m.id || k.endsWith(':' + m.id))[0];
-      const pv = pk ? mdProbes[pk] : null;
-      const outMax = (pv && (pv.measured || pv.claimed)) || m.max_output_tokens || 0;
-      const eff = (m.supported_efforts || []).slice();
-      if (m.can_disable_thinking && eff.length && eff.indexOf('off') < 0) eff.push('off（可关）');
-      const effHtml = eff.length
-        ? eff.map(e => '<span class="tag warn">' + esc(e) + '</span>').join(' ')
-        : '<span style="color:var(--ink-3)">' + (m.supports_reasoning ? '固定档 · 默认 ' + esc(m.default_effort || '?') : '不支持思考') + '</span>';
-      return '<tr><td class="who"><div class="nm">' + esc(m.id) + '</div></td>' +
-        '<td>' + esc(m.name || '') + '</td>' +
-        '<td class="num">' + sizeTag(m.context_length) + '</td>' +
-        '<td class="num">' + sizeTag(outMax) + '</td>' +
-        '<td class="efs" style="white-space:normal">' + effHtml + '</td></tr>';
-    }).join('');
-  } catch (e) {
-    tb.innerHTML = '<tr><td colspan="5"><div class="empty">' + esc(e.message) + '</div></td></tr>';
+  const list = qmApplyFilter(qmCache);
+  if (!list.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="note">这个筛选下没有模型</td></tr>';
+    return;
   }
+  tb.innerHTML = list.map(function (m) {
+    const realm = m.realm === 'cn' ? '国内' : '国际';
+    const prefix = m.realm === 'cn' ? 'qodercn:' : 'qoderglobal:';
+    let price = '<span class="tag">' + (m.price_rate != null ? Number(m.price_rate).toFixed(2) + 'x' : '—') + '</span>';
+    if (m.promo_active) {
+      price += ' <span class="tag warn">' + esc(m.promo_badge || '峰谷价') + '</span>';
+    } else if (m.is_free) {
+      price += ' <span class="tag warn">限时免费</span>';
+      if (m.original_price_rate) price += ' <span class="note">原 ' + m.original_price_rate + 'x</span>';
+    }
+    const caps = [];
+    if (m.vision) caps.push('<span class="tag">视觉</span>');
+    if (m.reasoning) caps.push('<span class="tag warn">推理</span>');
+    if (m.is_new) caps.push('<span class="tag">NEW</span>');
+    if (!m.enabled) caps.push('<span class="tag">未开放</span>');
+    let ctx = m.context ? Math.round(m.context / 1000) + 'K' : '—';
+    if (m.contexts && m.contexts.length) {
+      ctx = m.contexts.map(function (x) {
+        return x === m.default_context ? '<b>' + esc(x) + '</b>' : esc(x);
+      }).join(' / ');
+    }
+    let think = '<span class="note">不支持</span>';
+    if (m.think_efforts && m.think_efforts.length) {
+      think = m.think_efforts.map(function (e) {
+        return e === m.default_think
+          ? '<span class="tag warn">' + esc(e) + ' · 默认</span>'
+          : '<span class="tag">' + esc(e) + '</span>';
+      }).join(' ');
+      if (m.can_disable_thinking) think += ' <span class="tag">可关闭</span>';
+    }
+    return '<tr>' +
+      '<td><div class="nm">' + esc(m.name || m.key) + '</div>' +
+      '<div class="note mono">' + prefix + esc(m.slug || m.key) + '</div></td>' +
+      '<td>' + realm + '</td>' +
+      '<td>' + price + '</td>' +
+      '<td>' + (caps.join(' ') || '—') + '</td>' +
+      '<td>' + ctx + '</td>' +
+      '<td>' + think + '</td>' +
+      '</tr>';
+  }).join('');
 }
+
+function loadQoderModels() {
+  const tb = $('qdModelBody');
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="6"><div class="empty">正在读取目录…</div></td></tr>';
+  api('qoder/models?realm=' + encodeURIComponent(qmRealm)).then(function (d) {
+    qmCache = (d && d.models) || [];
+    $('qdModelNote').textContent = qmRealm === 'cn'
+      ? '国内版 · ' + qmCache.length + ' 个'
+      : '国际版 · ' + qmCache.length + ' 个';
+    qmRender();
+  }).catch(function (e) {
+    tb.innerHTML = '<tr><td colspan="6" class="grerr">读取失败：' + esc(e.message) + '</td></tr>';
+  });
+}
+
+document.querySelectorAll('[data-qm-realm]').forEach(function (b) {
+  b.onclick = function () {
+    qmRealm = b.getAttribute('data-qm-realm');
+    document.querySelectorAll('[data-qm-realm]').forEach(function (x) { x.classList.toggle('on', x === b); });
+    loadQoderModels();
+  };
+});
+document.querySelectorAll('[data-qm-filter]').forEach(function (b) {
+  b.onclick = function () {
+    qmFilter = b.getAttribute('data-qm-filter');
+    document.querySelectorAll('[data-qm-filter]').forEach(function (x) { x.classList.toggle('on', x === b); });
+    qmRender();
+  };
+});
+if ($('btnQoderModels')) $('btnQoderModels').onclick = loadQoderModels;
 async function loadQoderPage() {
   loadQoder();
   loadQoderModels();
@@ -4718,3 +4787,445 @@ if ($('btnMtReload')) $('btnMtReload').onclick = loadMaintenance;
    「查询失败」。所以这两句放最后，而不是原地打补丁。 */
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
 start();
+
+
+/* ── Qoder 账号管理（运行期加号，写 data/qoder_accounts.json 并热替换） ── */
+async function loadQoderAccounts() {
+  const body = $('qaBody');
+  if (!body) return;
+  try {
+    const d = await api('qoder/accounts');
+    const list = (d && d.accounts) || [];
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="6" class="note">还没有账号，点右上角「+ 添加账号」</td></tr>';
+      return;
+    }
+    // 双区汇总
+    const agg = { cn: { n: 0, credits: 0 }, intl: { n: 0, credits: 0 } };
+    list.forEach(function (a) {
+      const k = a.realm === 'cn' ? 'cn' : 'intl';
+      agg[k].n += 1;
+      if (a.quota && a.quota.ok) agg[k].credits += (a.quota.remaining || 0);
+    });
+    if ($('qdCnCount')) $('qdCnCount').textContent = agg.cn.n;
+    if ($('qdIntlCount')) $('qdIntlCount').textContent = agg.intl.n;
+    if ($('qdCnCredits')) $('qdCnCredits').textContent = Math.round(agg.cn.credits);
+    if ($('qdIntlCredits')) $('qdIntlCredits').textContent = Math.round(agg.intl.credits);
+
+    body.innerHTML = list.map(function (a) {
+      const realm = a.realm === 'cn' ? '国内' : '国际';
+      const q = a.quota || null;
+      let bal = '—';
+      if (q && q.ok) bal = Math.round(q.remaining) + ' / ' + Math.round(q.total);
+      else if (q && q.error) bal = '<span class="note">查询失败</span>';
+      const state = a.disabled
+        ? '<span class="tag">已停用</span>'
+        : (q && q.ok ? '<span class="tag good">可用</span>' : '<span class="tag warn">未知</span>');
+      const tok = a.personal_access_token || a.access_token || '';
+      return '<tr>' +
+        '<td title="' + esc(tok) + '">' + esc(a.name || '-') + '</td>' +
+        '<td>' + realm + '</td>' +
+        '<td>' + state + '</td>' +
+        '<td>' + bal + '</td>' +
+        '<td>' +
+          '<button class="xs" data-qa-toggle="' + esc(a.name || '') + '" data-dis="' + (a.disabled ? '1' : '0') + '">' +
+            (a.disabled ? '启用' : '停用') + '</button> ' +
+          '<button class="xs" data-qa-test="' + esc(a.name || '') + '">测试</button> ' +
+          '<button class="xs" data-qa-del="' + esc(a.name || '') + '">删除</button>' +
+        '</td>' +
+        '</tr>';
+    }).join('');
+    body.querySelectorAll('[data-qa-toggle]').forEach(function (btn) {
+      btn.onclick = async function () {
+        const name = btn.getAttribute('data-qa-toggle');
+        const dis = btn.getAttribute('data-dis') === '1';
+        btn.disabled = true;
+        try {
+          await api('qoder/accounts/disable', { method: 'POST', body: JSON.stringify({ name: name, disabled: !dis }) });
+          loadQoderAccounts();
+        } catch (e) { $('qaNote').textContent = e.message; btn.disabled = false; }
+      };
+    });
+    body.querySelectorAll('[data-qa-test]').forEach(function (btn) {
+      btn.onclick = async function () {
+        const name = btn.getAttribute('data-qa-test');
+        btn.disabled = true; btn.textContent = '测试中…';
+        try {
+          await api('qoder/accounts/test', { method: 'POST', body: JSON.stringify({ name: name }) });
+          $('qaNote').textContent = name + ' 测试通过';
+          btn.textContent = '测试';
+        } catch (e) {
+          $('qaNote').textContent = name + ' 测试失败：' + e.message;
+          btn.textContent = '测试';
+        }
+        btn.disabled = false;
+      };
+    });
+    body.querySelectorAll('[data-qa-del]').forEach(function (btn) {
+      btn.onclick = async function () {
+        const name = btn.getAttribute('data-qa-del');
+        if (!name || !confirm('删除账号 ' + name + '？')) return;
+        btn.disabled = true;
+        try {
+          await api('qoder/accounts/delete', { method: 'POST', body: JSON.stringify({ name: name }) });
+          $('qaNote').textContent = '已删除 ' + name;
+          loadQoderAccounts();
+        } catch (e) {
+          $('qaNote').textContent = e.message;
+          btn.disabled = false;
+        }
+      };
+    });
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="6" class="grerr">读取失败：' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function qaFormValues() {
+  return {
+    personal_access_token: ($('qaPat').value || '').trim(),
+    realm: $('qaRealm').value,
+    uid: ($('qaUid').value || '').trim(),
+    nickname: ($('qaNick').value || '').trim(),
+  };
+}
+
+async function qaVerify() {
+  const v = qaFormValues();
+  if (!v.personal_access_token) { $('qaFormNote').textContent = '先填 PAT'; return; }
+  $('qaFormNote').textContent = '校验中…';
+  try {
+    await api('qoder/verify', { method: 'POST', body: JSON.stringify(v) });
+    $('qaFormNote').textContent = '凭据有效，可以保存了';
+  } catch (e) {
+    $('qaFormNote').textContent = '校验失败：' + e.message;
+  }
+}
+
+async function qaSave() {
+  const v = qaFormValues();
+  if (!v.personal_access_token) { $('qaFormNote').textContent = '先填 PAT'; return; }
+  $('qaFormNote').textContent = '保存中…';
+  try {
+    await api('qoder/accounts', { method: 'POST', body: JSON.stringify(v) });
+    $('qaForm').hidden = true;
+    $('qaNote').textContent = '已加入池，无需重启';
+    loadQoderAccounts();
+  } catch (e) {
+    $('qaFormNote').textContent = '保存失败：' + e.message;
+  }
+}
+
+if ($('btnQaReload')) $('btnQaReload').onclick = loadQoderAccounts;
+if ($('btnQaOpen')) $('btnQaOpen').onclick = function () { $('qaForm').hidden = false; };
+if ($('btnQaCancel')) $('btnQaCancel').onclick = function () { $('qaForm').hidden = true; };
+if ($('btnQaVerify')) $('btnQaVerify').onclick = qaVerify;
+if ($('btnQaSave')) $('btnQaSave').onclick = qaSave;
+if ($('qaRealm')) $('qaRealm').onchange = function () {
+  const cn = $('qaRealm').value === 'cn';
+  $('qaUid').placeholder = cn ? '国内版必填（个人中心可见）' : '国际版可空';
+  $('qaFormNote').textContent = cn
+    ? '国内版：PAT 必须来自 qoder.com.cn；UID 填账号的 01a... 开头 ID。'
+    : '国际版：PAT 必须来自 qoder.com；UID 可留空。';
+};
+
+
+/* ── Qoder 用量 / 日志（与主用量、主日志同源，只按前缀过滤） ── */
+async function loadQoderUsage() {
+  const body = $('quBody');
+  if (!body) return;
+  try {
+    const d = await api('qoder/usage?hours=24');
+    const rows = (d && d.models) || [];
+    const tt = (d && d.totals) || {};
+    const fmt = function (n) { return n ? Number(n).toLocaleString() : '0'; };
+    if ($('quTotal')) $('quTotal').textContent = fmt(tt.total);
+    if ($('quReq')) $('quReq').textContent = fmt(tt.requests);
+    if ($('quTps')) $('quTps').textContent = tt.tps ? Number(tt.tps).toFixed(1) : '—';
+    if ($('quLat')) $('quLat').textContent = tt.ttft_ms ? Math.round(tt.ttft_ms) + ' ms' : '—';
+    if ($('quCredits')) $('quCredits').textContent = tt.credits ? Number(tt.credits).toFixed(4) : '0';
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="8" class="note">最近 24 小时没有 Qoder 请求</td></tr>';
+      $('quNote').textContent = '0';
+      return;
+    }
+    body.innerHTML = rows.map(function (m) {
+      return '<tr>' +
+        '<td class="mono">' + esc(m.model) + '</td>' +
+        '<td>' + fmt(m.requests) + '</td>' +
+        '<td>' + fmt(m.total) + '</td>' +
+        '<td>' + fmt(m.input) + ' / ' + fmt(m.output) + '</td>' +
+        '<td>' + (m.ttft_ms ? Math.round(m.ttft_ms) + ' ms' : '—') + '</td>' +
+        '<td>' + (m.tps ? Number(m.tps).toFixed(1) : '—') + '</td>' +
+        '<td>' + (m.cached_n ? Number(m.cached || 0).toLocaleString() : '—') + '</td>' +
+        '<td>' + (m.credits ? Number(m.credits).toFixed(4) : '—') + '</td>' +
+        '</tr>';
+    }).join('');
+    $('quNote').textContent = rows.length + ' 个模型 · 共 ' + fmt(d.requests) + ' 次';
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="8" class="grerr">读取失败：' + esc(e.message) + '</td></tr>';
+  }
+}
+if ($('btnQuReload')) $('btnQuReload').onclick = loadQoderUsage;
+if ($('btnQuReload')) $('btnQuReload').onclick = loadQoderUsage;
+
+async function loadQoderLogs() {
+  const pre = $('qlBody');
+  if (!pre) return;
+  try {
+    const d = await api('logs');
+    const lines = (d.entries || []).filter(function (e) {
+      return (e.text || '').toLowerCase().indexOf('qoder') >= 0;
+    });
+    pre.textContent = lines.length
+      ? lines.map(function (e) { return (e.ts || '') + '  ' + (e.text || ''); }).join('\n')
+      : '（暂无 Qoder 日志）';
+    $('qlNote').textContent = lines.length + ' 行';
+  } catch (e) {
+    pre.textContent = '读取失败：' + e.message;
+  }
+}
+if ($('btnQlReload')) $('btnQlReload').onclick = loadQoderLogs;
+
+
+/* ── Qoder 设备授权登录：点一下拿链接，后台轮询，成功后自动入池 ── */
+let qaOAuthTimer = null;
+async function qaStartOAuth() {
+  const realmSel = $('qaRealm');
+  const realm = realmSel ? realmSel.value : 'cn';
+  $('qaOAuthNote').textContent = '正在生成授权链接…';
+  try {
+    const d = await api('qoder/oauth/start', { method: 'POST', body: JSON.stringify({ realm: realm }) });
+    const link = $('qaOAuthLink');
+    if (link) { link.href = d.authUrl; link.hidden = false; }
+    $('qaOAuthNote').textContent = '已生成链接，点「打开授权页」或在浏览器里完成登录';
+    if (d.authUrl) window.open(d.authUrl, '_blank');
+    if (qaOAuthTimer) clearInterval(qaOAuthTimer);
+    qaOAuthTimer = setInterval(async function () {
+      try {
+        const r = await api('qoder/oauth/poll?state=' + encodeURIComponent(d.state));
+        if (r.status === 'pending') {
+          $('qaOAuthNote').textContent = r.message || '等待授权…';
+          return;
+        }
+        clearInterval(qaOAuthTimer); qaOAuthTimer = null;
+        if (r.status === 'ok') {
+          $('qaOAuthNote').textContent = '授权成功：' + (r.account || '');
+          $('qaForm').hidden = true;
+          $('qaNote').textContent = '已加入池，无需重启';
+          loadQoderAccounts();
+        } else {
+          $('qaOAuthNote').textContent = r.message || '授权失败';
+        }
+      } catch (e) {
+        $('qaOAuthNote').textContent = '轮询失败：' + e.message;
+      }
+    }, 3000);
+  } catch (e) {
+    $('qaOAuthNote').textContent = '生成失败：' + e.message;
+  }
+}
+if ($('btnQaOAuth')) $('btnQaOAuth').onclick = qaStartOAuth;
+
+
+/* ── Qoder 客户端接入向导：只展示配置，不写文件 ── */
+function loadQoderClients() {
+  const body = $('qcBody');
+  if (!body) return;
+  const base = window.location.origin + '/v1';
+  const models = ['qoder:auto', 'qoder:dmodel', 'qoder:dfmodel'];
+  body.innerHTML = [
+    ['网关地址', base],
+    ['鉴权', '与 WorkBuddy 同一把 key（Authorization: Bearer …）'],
+    ['Qoder 模型前缀', 'qoder:'],
+    ['WorkBuddy 前缀', 'cn: / global:'],
+    ['示例模型', models.join('　')],
+  ].map(function (r) {
+    return '<tr><td>' + r[0] + '</td><td class="mono">' + esc(r[1]) + '</td><td></td></tr>';
+  }).join('');
+  const snip = 'model_provider = "wb-syan"\n' +
+    '[model_providers.wb-syan]\n' +
+    'base_url = "' + base + '"\n' +
+    'env_key = "WB_SYAN_KEY"\n\n' +
+    '# 调用示例\n' +
+    'curl ' + base + '/chat/completions \\\n' +
+    '  -H "Authorization: Bearer $WB_SYAN_KEY" \\\n' +
+    '  -H "Content-Type: application/json" \\\n' +
+    '  -d \'{"model":"qoder:auto","messages":[{"role":"user","content":"hi"}]}\'';
+  $('qcSnippet').textContent = snip;
+}
+if ($('btnQcReload')) $('btnQcReload').onclick = loadQoderClients;
+if ($('btnQcCopy')) $('btnQcCopy').onclick = function () {
+  const txt = $('qcSnippet').textContent || '';
+  const done = function () { $('qcSnippet').style.outline = '1px solid var(--ok)'; setTimeout(function(){ $('qcSnippet').style.outline=''; }, 800); };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(txt).then(done).catch(function(){});
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = txt; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+};
+
+
+/* ── Pro 升级包领取（逐账号，幂等） ── */
+async function qoderProClaim() {
+  const btn = $('btnQoderPro');
+  const note = $('qpNote');
+  if (!btn || !note) return;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  note.textContent = '领取中…';
+  try {
+    const r = await api('qoder/pro', { method: 'POST', body: '{}' });
+    const rows = (r.results || []).map(function (x) {
+      const tag = x.state === 'claimed_now' ? '✓' : (x.state === 'error' ? '!' : '—');
+      return tag + ' ' + (x.account || x.uid || '') + '：' + (x.message || x.state);
+    });
+    note.textContent = rows.join('\n') || '没有账号';
+    if (r.claimed) note.textContent = '本轮新增 ' + r.earned + ' 积分\n' + note.textContent;
+    loadQoderAccounts();
+  } catch (e) {
+    note.textContent = '领取失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+if ($('btnQoderPro')) $('btnQoderPro').onclick = qoderProClaim;
+
+
+/* ── 导入本机已登录的 Qoder 客户端凭证（只读扫描后写入池） ── */
+async function qoderImportLocal() {
+  const btn = $('btnQaLocal');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  $('qaNote').textContent = '扫描中…';
+  try {
+    const r = await api('qoder/local/import', { method: 'POST', body: '{}' });
+    const extra = (r.messages || []).join('；');
+    $('qaNote').textContent = '导入 ' + (r.added || 0) + ' 个账号' + (extra ? '（' + extra + '）' : '');
+    loadQoderAccounts();
+  } catch (e) {
+    $('qaNote').textContent = '导入失败：' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+if ($('btnQaLocal')) $('btnQaLocal').onclick = qoderImportLocal;
+
+
+/* ── Qoder 分组折叠 ────────────────────────────────────────────────
+   用 document 捕获阶段拦：侧栏自己有一套 pointerdown/click（拖拽排序 +
+   切视图），在元素上挂监听会被它们抢先，表现就是「点了没反应」。
+   捕获阶段最早，且只认「.nav-group 的直接子 <a>」——子项不受影响。 */
+document.addEventListener('click', function (ev) {
+  var head = ev.target && ev.target.closest ? ev.target.closest('.nav-group > a') : null;
+  if (!head) return;
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  head.parentElement.classList.toggle('expanded');
+}, true);
+
+
+/* ── Qoder 签到与福利：任务表 + 一键领取 ── */
+async function loadQoderTasks() {
+  const body = $('qtBody');
+  if (!body) return;
+  try {
+    const d = await api('qoder/campaigns');
+    const rows = (d && d.campaigns) || [];
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="4" class="note">该账号没有可领取的活动</td></tr>';
+      $('qtNote').textContent = '无活动';
+      return;
+    }
+    body.innerHTML = rows.map(function (x) {
+      const state = x.claim_status === 'CLAIMED' ? '已领取'
+        : (x.claim_status === 'CLAIMABLE' ? '可领取' : (x.claim_status || '—'));
+      return '<tr>' +
+        '<td class="mono">' + esc(x.campaign_key || x.campaign_id || '-') + '</td>' +
+        '<td>' + esc(x.account || x.uid || '') + '</td>' +
+        '<td class="note">' + esc(x.action_type || '') + '</td>' +
+        '<td>' + esc(state) + '</td>' +
+        '</tr>';
+    }).join('');
+    $('qtNote').textContent = rows.length + ' 条';
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="4" class="grerr">读取失败：' + esc(e.message) + '</td></tr>';
+  }
+}
+if ($('btnQtPro')) $('btnQtPro').onclick = qoderProClaim;
+
+
+/* ── Qoder 账号页汇总：账号池 / 积分 / 调用量 / 成功率 / 最近请求 ── */
+async function loadQoderOverview() {
+  try {
+    const d = await api('qoder/overview');
+    const a = d.accounts || {};
+    const cr = d.credits || {};
+    const u = d.usage || {};
+    if ($('qoPool')) $('qoPool').textContent = (a.healthy || 0) + ' / ' + (a.total || 0);
+    if ($('qoCredits')) $('qoCredits').textContent = Math.round(cr.total || 0);
+    if ($('qoReq')) $('qoReq').textContent = u.requests || 0;
+    const rate = (u.requests || 0) > 0
+      ? ((1 - (u.errors || 0) / u.requests) * 100).toFixed(1) + '%'
+      : '—';
+    if ($('qoRate')) $('qoRate').textContent = rate;
+
+    const rows = d.recent || [];
+    const body = $('qrBody');
+    if (body) {
+      body.innerHTML = rows.length
+        ? rows.map(function (r) {
+            return '<tr><td class="mono">' + esc(r.ts || '') + '</td>' +
+              '<td class="note">' + esc(r.text || '') + '</td></tr>';
+          }).join('')
+        : '<tr><td colspan="2" class="note">还没有 Qoder 请求</td></tr>';
+    }
+    if ($('qrNote')) $('qrNote').textContent = rows.length + ' 条';
+  } catch (e) { /* 汇总失败不影响账号表 */ }
+}
+
+
+/* ── Qoder 调度条：每日 09:00 / 21:00 签到，显示下一次 ── */
+(function qoderScheduleTick() {
+  const el = document.getElementById('qdSchedNext');
+  if (!el) return;
+  function nextRun() {
+    const now = new Date();
+    const cands = [];
+    for (let d = 0; d < 2; d++) {
+      [9, 21].forEach(function (h) {
+        const x = new Date(now);
+        x.setDate(now.getDate() + d);
+        x.setHours(h, 0, 0, 0);
+        if (x > now) cands.push(x);
+      });
+    }
+    cands.sort(function (a, b) { return a - b; });
+    return cands[0];
+  }
+  function tick() {
+    const t = nextRun();
+    const ms = t - Date.now();
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    el.textContent = '下次 ' + t.toTimeString().slice(0, 5) + '（' + h + 'h' + m + 'm 后）';
+  }
+  tick();
+  setInterval(tick, 60000);
+})();
+
+
+/* 导出账号文件（含凭据，仅面板登录后可用） */
+if ($('btnQaExport')) {
+  $('btnQaExport').onclick = function () {
+    const a = document.createElement('a');
+    a.href = 'api/qoder/accounts/export';
+    a.download = 'qoder_accounts.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+}

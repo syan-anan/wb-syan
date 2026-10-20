@@ -9,12 +9,14 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/syan-anan/wb-syan/internal/session"
 	"github.com/syan-anan/wb-syan/internal/upstream"
@@ -22,25 +24,47 @@ import (
 
 // qoderModelPrefix 模型名前缀。用 "qoder:" 而不是 "qoder/" 是为了和既有的
 // "cn:" / "global:" realm 前缀保持同一种语法，客户端不用记两套规则。
-const qoderModelPrefix = "qoder:"
+const (
+	qoderModelPrefix = "qoder:"
+	// 双区显式前缀：同一把 key、同一个地址，用前缀决定走哪一区。
+	qoderCNPrefix     = "qodercn:"
+	qoderGlobalPrefix = "qoderglobal:"
+)
 
 // qoderChat 处理一条 qoder:* 请求。
 //
 // body 是**原始请求体**（已由 chatCompletions 读入）；这里只改 model 字段，
 // 其余字段（messages / tools / temperature / stream …）一字不动地透传给上游——
 // 上游要什么形状就给他什么形状，网关不在这里二次发明。
-func (h *Handler) qoderChat(w http.ResponseWriter, r *http.Request, body []byte, bareModel string, stream bool) {
+// splitQoderModel 解析 Qoder 模型名前缀，返回 (realm, 裸模型名, 是否匹配)。
+// realm 为空表示「全池」（兼容旧的 qoder: 前缀）。
+func splitQoderModel(model string) (string, string, bool) {
+	switch {
+	case strings.HasPrefix(model, qoderCNPrefix):
+		return "cn", strings.TrimPrefix(model, qoderCNPrefix), true
+	case strings.HasPrefix(model, qoderGlobalPrefix):
+		return "intl", strings.TrimPrefix(model, qoderGlobalPrefix), true
+	case strings.HasPrefix(model, qoderModelPrefix):
+		return "", strings.TrimPrefix(model, qoderModelPrefix), true
+	}
+	return "", "", false
+}
+
+func (h *Handler) qoderChat(w http.ResponseWriter, r *http.Request, body []byte, modelSlug, realm string, stream bool) {
+	t0 := time.Now()
 	if h.cfg.Qoder == nil {
 		writeOpenAIError(w, http.StatusNotImplemented, "qoder_not_configured",
 			"Qoder 上游未配置：在 config 里填 qoder.personal_access_token 后重启")
 		return
 	}
-	if strings.TrimSpace(bareModel) == "" {
+	if strings.TrimSpace(modelSlug) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "model: qoder: 后缺少模型名")
 		return
 	}
+	// 客户端传的是 slug（deepseek-flash），上游要 key（dfmodel）。
+	modelKey := upstream.QoderResolveKey(realm, modelSlug)
 
-	out, err := rewriteQoderModel(body, bareModel)
+	out, err := rewriteQoderModel(body, modelKey)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "rewrite model: "+err.Error())
 		return
@@ -55,10 +79,15 @@ func (h *Handler) qoderChat(w http.ResponseWriter, r *http.Request, body []byte,
 		out = injectQoderCacheKey(out, stickyKey)
 	}
 
-	rc, status, respBody, err := h.cfg.Qoder.ChatStream(r.Context(), out, stickyKey)
+	rc, status, respBody, err := h.cfg.Qoder.ChatStream(r.Context(), out, stickyKey, realm)
 	if err != nil {
-		log.Printf("ERR: [qoder] %s: %v", bareModel, err)
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		log.Printf("ERR: [qoder] %s: %v", modelSlug, err)
+		code := http.StatusBadGateway
+		if status == http.StatusServiceUnavailable {
+			// 「该区没有可用账号」是容量问题，不是上游故障：503 才能让客户端重试。
+			code = http.StatusServiceUnavailable
+		}
+		writeOpenAIError(w, code, "upstream_error", err.Error())
 		return
 	}
 	if rc == nil {
@@ -73,8 +102,20 @@ func (h *Handler) qoderChat(w http.ResponseWriter, r *http.Request, body []byte,
 		_, _ = w.Write(respBody)
 		return
 	}
-	defer rc.Close()
-	pipeUpstream(w, rc, stream)
+	usagePrefix := qoderModelPrefix
+	switch realm {
+	case "cn":
+		usagePrefix = qoderCNPrefix
+	case "intl":
+		usagePrefix = qoderGlobalPrefix
+	}
+	// 用量旁路：Qoder 分支在 handler 里提前 return，进不了 WorkBuddy 的
+	// recordAttempt，所以在这里单独接一次。
+	tap := newQoderUsageTap(rc, t0, func(p, c, cached, ttft, total int64, ok bool) {
+		// 记录 slug 而不是 key：用量页要跟 /v1/models 显示的名字一致。
+		h.recordQoderUsage(realm, "", usagePrefix+modelSlug, p, c, cached, ttft, total, ok)
+	})
+	pipeUpstream(w, tap, stream)
 }
 
 // rewriteModel 把请求体的 model 换成裸名，其余字段原样保留。
@@ -95,16 +136,29 @@ func rewriteQoderModel(body []byte, bareModel string) ([]byte, error) {
 }
 
 // qoderModelEntries 供 /v1/models 列出的 Qoder 模型（带 qoder: 前缀）。
-func qoderModelEntries() []map[string]any {
-	models := upstream.QoderModels()
-	out := make([]map[string]any, 0, len(models))
-	for _, m := range models {
-		out = append(out, map[string]any{
-			"id":       qoderModelPrefix + m.ID,
-			"object":   "model",
-			"owned_by": "qoder",
-			"label":    m.Label,
-		})
+func (h *Handler) qoderModelEntries() []map[string]any {
+	out := make([]map[string]any, 0, 32)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	for _, r := range []struct {
+		prefix string
+		realm  string
+	}{{qoderCNPrefix, "cn"}, {qoderGlobalPrefix, "intl"}} {
+		entries := upstream.QoderCatalog(r.realm)
+		if h.cfg.Qoder != nil {
+			// 动态目录（官方此刻），拉不到时 Catalog 内部已回落快照。
+			if dyn := h.cfg.Qoder.Catalog(ctx, r.realm); len(dyn) > 0 {
+				entries = dyn
+			}
+		}
+		for _, m := range entries {
+			out = append(out, map[string]any{
+				"id":       r.prefix + m.Slug,
+				"object":   "model",
+				"owned_by": "qoder-" + r.realm,
+				"label":    m.Name,
+			})
+		}
 	}
 	return out
 }

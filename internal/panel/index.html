@@ -651,6 +651,13 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 .keyempty .big { font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
 .acctpick label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
 .acctpick .empty-tip { color: var(--ink-3); font-size: 12.5px; }
+
+/* Qoder 分组：组头可折叠，子项走同一套 .on 高亮。 */
+.nav-group > .nav-sub { display: none; margin: 2px 0 8px 20px; padding-left: 10px; border-left: 1px solid var(--line); list-style: none; }
+.nav-group.expanded > .nav-sub { display: block; }
+.nav-sub li { margin: 1px 0; }
+.nav-sub a { font-size: 12.5px; padding: 4px 8px; border-radius: 8px; opacity: .86; }
+.nav-sub a.on { opacity: 1; }
 </style>
 <!-- 液态玻璃主题层（syanUI 视觉）：只覆盖样式，不改 DOM/JS。删掉本行即回滚。 -->
 <link rel="stylesheet" href="theme.css">
@@ -684,9 +691,19 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
       <li><a href="#models" data-view="models">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
         模型与档位</a></li>
-      <li><a href="#qoder" data-view="qoder">
+      <li class="nav-group"><a href="#qoder-accounts" data-view="qoder">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.2"/><path d="M9.6 9.6 12.4 12.4"/><path d="M8 5.2v5.6M5.6 6.6 8 8l2.4-1.4"/></svg>
-        Qoder</a></li>
+        Qoder</a>
+        <ul class="nav-sub">
+          <li><a href="#qoder-accounts" data-view="qoder-accounts">账号</a></li>
+          <li><a href="#qoder-tasks" data-view="qoder-tasks">签到与福利</a></li>
+          <li><a href="#qoder-models" data-view="qoder-models">模型</a></li>
+          <li><a href="#qoder-usage" data-view="qoder-usage">用量</a></li>
+          <li><a href="#qoder-logs" data-view="qoder-logs">日志</a></li>
+          <li><a href="#qoder-clients" data-view="qoder-clients">客户端接入</a></li>
+          <li><a href="#qoder-settings" data-view="qoder-settings">设置</a></li>
+        </ul>
+      </li>
       <li><a href="#apikeys" data-view="apikeys">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.6" cy="10.4" r="2.7"/><path d="M7.6 8.4 13.2 2.8M11.4 4.6l1.4 1.4M9.9 6.1l1.4 1.4"/></svg>
         密钥管理</a></li>
@@ -907,7 +924,91 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
 
     <!-- Qoder（非 WorkBuddy 上游）：独立一栏，点进来全是这个上游自己的配置与状态。
          数据和 WorkBuddy 账号池完全分开——Qoder 的 token 不参与选号、不进账号池统计。 -->
-    <section class="view" id="view-qoder" hidden>
+        <section class="view" id="view-qoder-accounts" hidden>
+      <div class="box" style="padding:10px 14px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="tag good" id="qdSchedDot">●</span>
+          <span style="font-weight:600">后台定时</span>
+          <span class="note" id="qdSchedText">Qoder 每日签到：09:00 / 21:00</span>
+          <span class="grow"></span>
+          <span class="note" id="qdSchedNext">—</span>
+        </div>
+      </div>
+      <div class="stats qd-stats">
+        <div class="stat"><div class="v" id="qdCnCount">-</div><div class="k">国内账号</div></div>
+        <div class="stat good"><div class="v" id="qdCnCredits">-</div><div class="k">国内积分合计</div></div>
+        <div class="stat"><div class="v" id="qdIntlCount">-</div><div class="k">国际账号</div></div>
+        <div class="stat good"><div class="v" id="qdIntlCredits">-</div><div class="k">国际积分合计</div></div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="qoPool">-</div><div class="k">可用账号池</div></div>
+        <div class="stat good"><div class="v" id="qoCredits">-</div><div class="k">积分余额</div></div>
+        <div class="stat"><div class="v" id="qoReq">-</div><div class="k">24h 调用量</div></div>
+        <div class="stat"><div class="v" id="qoRate">-</div><div class="k">成功率</div></div>
+      </div>
+      <div class="box">
+        <header>
+          <h3>Qoder 账号 <span class="hint">国内走 gateway.qoder.com.cn，国际走 api2-v2.qoder.sh</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="qaNote">—</span>
+          <button class="xs" id="btnQaReload">刷新</button>
+          <button class="xs" id="btnQaExport">导出</button>
+          <button class="xs" id="btnQaLocal">导入本机凭证</button>
+          <button class="xs primary" id="btnQaOpen">+ 添加账号</button>
+        </header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>名称</th><th>区域</th><th>状态</th><th>余额</th><th>操作</th></tr></thead>
+              <tbody id="qaBody"><tr><td colspan="5" class="note">加载中…</td></tr></tbody>
+            </table>
+          </div>
+          <div id="qaForm" hidden style="margin-top:12px">
+            <div class="filterbar">
+              <span class="lb">区域</span>
+              <select id="qaRealm" class="xs">
+                <option value="cn">国内版（qoder.com.cn）</option>
+                <option value="intl">国际版（qoder.com）</option>
+              </select>
+              <span class="lb">UID</span>
+              <input id="qaUid" class="xs" placeholder="国内版必填，国际版可空" style="width:280px">
+              <span class="lb">昵称</span>
+              <input id="qaNick" class="xs" placeholder="可选" style="width:140px">
+            </div>
+            <div class="filterbar">
+              <span class="lb">登录</span>
+              <button class="xs primary" id="btnQaOAuth">浏览器授权登录</button>
+              <a id="qaOAuthLink" class="xs" target="_blank" rel="noopener" hidden>打开授权页</a>
+              <span class="grow"></span>
+              <span class="note" id="qaOAuthNote">点按钮生成链接，用 Qoder 账号登录后自动入池</span>
+            </div>
+            <div class="filterbar">
+              <span class="lb">PAT</span>
+              <input id="qaPat" class="xs" placeholder="pt-...（网页 设置 → 个人访问令牌 生成）" style="width:520px">
+              <span class="grow"></span>
+              <button class="xs" id="btnQaVerify">校验</button>
+              <button class="xs primary" id="btnQaSave">保存并启用</button>
+              <button class="xs" id="btnQaCancel">取消</button>
+            </div>
+            <div class="note" id="qaFormNote">国内版：填 qoder.com.cn 生成的 pt-；国际版：填 qoder.com 生成的 pt-。</div>
+          </div>
+        </div>
+      </div>
+      <div class="box">
+        <header>
+          <h3>最近请求 <span class="hint">日志环里与 Qoder 相关的最后 20 条</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="qrNote">—</span>
+        </header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>时间</th><th>内容</th></tr></thead>
+              <tbody id="qrBody"><tr><td colspan="2" class="note">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
       <div class="box">
         <header>
           <h3>Qoder 上游 <span class="hint">模型前缀 qoder: 的请求走这条链路，不进 WorkBuddy 选号池</span></h3>
@@ -920,8 +1021,9 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <div class="qd-cfg" id="qdCfgBody"></div>
         </div>
       </div>
-
-      <div class="box">
+    </section>
+    <section class="view" id="view-qoder-tasks" hidden>
+<div class="box">
         <header>
           <h3>Qoder 签到</h3>
           <span class="grow"></span>
@@ -933,8 +1035,37 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
           <div class="qd-dots" id="qkDots">—</div>
         </div>
       </div>
-
       <div class="box">
+        <header>
+          <h3>福利任务 <span class="hint">每日领取 100 积分 · Pro 升级包一次性 +1800</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="qtNote">—</span>
+          <button class="xs" id="btnQtPro">领取福利包</button>
+        </header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>任务</th><th>账号</th><th>说明</th><th>状态</th></tr></thead>
+              <tbody id="qtBody"><tr><td colspan="4" class="note">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="view-qoder-models" hidden>
+<div class="box">
+        <div class="filterbar">
+          <span class="lb">区域</span>
+          <button class="xs on" data-qm-realm="cn">国内</button>
+          <button class="xs" data-qm-realm="intl">国际</button>
+          <span class="grow"></span>
+          <span class="lb">筛选</span>
+          <button class="xs on" data-qm-filter="all">全部</button>
+          <button class="xs" data-qm-filter="free">限时免费</button>
+          <button class="xs" data-qm-filter="vision">视觉</button>
+          <button class="xs" data-qm-filter="reasoning">推理</button>
+          <button class="xs" data-qm-filter="new">NEW</button>
+        </div>
         <header>
           <h3>Qoder 可用模型</h3>
           <span class="grow"></span>
@@ -943,12 +1074,100 @@ label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px
         </header>
         <div class="tbl-wrap">
           <table class="acc md">
-            <thead><tr><th>模型</th><th>名称</th><th>上下文</th><th>最大输出</th><th>思考档位</th></tr></thead>
-            <tbody id="qdModelBody"></tbody>
+            <thead><tr><th>模型</th><th>区域</th><th>倍率 / 峰谷价</th><th>能力</th><th>上下文窗口</th><th>思考档位</th></tr></thead>
+            <tbody id="qdModelBody"><tr><td colspan="6" class="note">加载中…</td></tr></tbody>
           </table>
         </div>
       </div>
     </section>
+    <section class="view" id="view-qoder-usage" hidden>
+      <div class="stats">
+        <div class="stat"><div class="v" id="quTotal">-</div><div class="k">窗口内 Token</div></div>
+        <div class="stat"><div class="v" id="quReq">-</div><div class="k">请求数</div></div>
+        <div class="stat good"><div class="v" id="quTps">-</div><div class="k">平均速度 tok/s</div></div>
+        <div class="stat"><div class="v" id="quLat">-</div><div class="k">平均延迟</div></div>
+        <div class="stat"><div class="v" id="quCredits">-</div><div class="k">积分消耗</div></div>
+      </div>
+      <div class="box">
+        <header>
+          <h3>Qoder 用量 <span class="hint">只统计 qoder: / qodercn: / qoderglobal: 前缀</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="quNote">—</span>
+          <button class="xs" id="btnQuReload">刷新</button>
+        </header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>模型</th><th>请求</th><th>总 Token</th><th>输入 / 输出</th><th>首字延迟</th><th>速度</th><th>缓存命中</th><th>积分</th></tr></thead>
+              <tbody id="quBody"><tr><td colspan="8" class="note">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="view-qoder-logs" hidden>
+      <div class="box">
+        <header>
+          <h3>Qoder 运行日志 <span class="hint">只显示与 Qoder 相关的行</span></h3>
+          <span class="grow"></span>
+          <span class="note" id="qlNote">—</span>
+          <button class="xs" id="btnQlReload">刷新</button>
+        </header>
+        <div class="pad"><pre class="mono" id="qlBody" style="max-height:520px;overflow:auto;white-space:pre-wrap"></pre></div>
+      </div>
+    </section>
+    <section class="view" id="view-qoder-clients" hidden>
+      <div class="box">
+        <header>
+          <h3>客户端接入 <span class="hint">只读向导：给出配置片段，不修改你机器上的任何文件</span></h3>
+          <span class="grow"></span>
+          <button class="xs" id="btnQcReload">刷新</button>
+        </header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>项</th><th>值</th><th></th></tr></thead>
+              <tbody id="qcBody"><tr><td colspan="3" class="note">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="box">
+        <header><h3>Codex / Claude Code 配置片段</h3><span class="grow"></span><button class="xs" id="btnQcCopy">复制</button></header>
+        <div class="pad"><pre class="mono" id="qcSnippet" style="white-space:pre-wrap"></pre></div>
+      </div>
+    </section>
+    <section class="view" id="view-qoder-settings" hidden>
+      <div class="box">
+        <header><h3>路由与出口</h3><span class="grow"></span><span class="note">同一地址、同一把 key，靠模型前缀区分</span></header>
+        <div class="pad">
+          <div class="tbl-wrap">
+            <table class="acc">
+              <thead><tr><th>前缀</th><th>走向</th><th>凭据</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">qodercn:</td><td>Qoder 国内版（gateway.qoder.com.cn）</td><td>国内账号</td></tr>
+                <tr><td class="mono">qoderglobal:</td><td>Qoder 国际版（api2-v2.qoder.sh）</td><td>国际账号</td></tr>
+                <tr><td class="mono">qoder:</td><td>Qoder 全池（兼容旧写法）</td><td>全部 Qoder 账号</td></tr>
+                <tr><td class="mono">cn:</td><td>WorkBuddy 国内账号池</td><td>WorkBuddy 账号</td></tr>
+                <tr><td class="mono">global:</td><td>WorkBuddy 国际账号池</td><td>WorkBuddy 账号</td></tr>
+                <tr><td class="mono">其它</td><td>通用 OpenAI 兼容上游</td><td>各 provider key</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="box">
+        <header><h3>调用示例</h3><span class="grow"></span></header>
+        <div class="pad">
+          <pre class="mono" style="white-space:pre-wrap">curl http://127.0.0.1:7863/v1/chat/completions \
+  -H "Authorization: Bearer &lt;你的 key&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qodercn:auto","messages":[{"role":"user","content":"hi"}]}'</pre>
+          <div class="note">国际版把 model 换成 <span class="mono">qoderglobal:auto</span>；WorkBuddy 用 <span class="mono">cn:</span> / <span class="mono">global:</span>。key 不变。</div>
+        </div>
+      </div>
+    </section>
+
 
     <!-- 积分构成 -->
     <section class="view" id="view-packages" hidden>

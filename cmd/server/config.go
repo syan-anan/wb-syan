@@ -99,6 +99,14 @@ type Config struct {
 			Name                string `json:"name"`
 			PersonalAccessToken string `json:"personal_access_token"`
 			TokenFile           string `json:"token_file"`
+			// Realm 为空或 intl = 国际版；cn = 国内版（COSY 签名链路）。
+			Realm string `json:"realm"`
+			// 以下字段国内版必填：参与 COSY 身份体与设备指纹派生。
+			UID      string `json:"uid"`
+			Nickname string `json:"nickname"`
+			UserType string `json:"user_type"`
+			OrgID    string `json:"org_id"`
+			OrgName  string `json:"org_name"`
 		} `json:"accounts"`
 	} `json:"qoder"`
 

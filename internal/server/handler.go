@@ -468,7 +468,7 @@ func (h *Handler) modelList() []map[string]any {
 	}
 	// Qoder 上游模型（qoder: 前缀）。未配置 Qoder 时不列，避免客户端选到必然 501 的模型。
 	if h.cfg.Qoder != nil {
-		out = append(out, qoderModelEntries()...)
+		out = append(out, h.qoderModelEntries()...)
 	}
 	// 通用 OpenAI 兼容上游模型（provider:model）。未配置时不列。
 	if h.cfg.Compat != nil {
@@ -634,8 +634,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Qoder 上游分流：model 形如 "qoder:<模型名>" 时整条请求交给 Qoder，
 	// 不进 WorkBuddy 的选号/粘性/冷却链路（两条上游账号体系完全不同）。
 	// 必须在 resolveModel 之前判：resolveModel 只认 cn:/global: 两种前缀。
-	if strings.HasPrefix(peek.Model, qoderModelPrefix) {
-		qModel := strings.TrimPrefix(peek.Model, qoderModelPrefix)
+	if qRealm, qModel, isQoder := splitQoderModel(peek.Model); isQoder {
 		if deny := h.keyAccessDeniedAnyRealm(id, peek.Model); deny.Denied() {
 			log.Printf("qoder: 子密钥 %s（%s）拒绝: %s", id.KeyID, id.Name, deny.Reason)
 			writeOpenAIError(w, deny.Status(), deny.Code, deny.Reason)
@@ -649,7 +648,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if release != nil {
 			defer release()
 		}
-		h.qoderChat(w, r, body, qModel, peek.Stream)
+		h.qoderChat(w, r, body, qModel, qRealm, peek.Stream)
 		return
 	}
 
@@ -891,9 +890,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				next := routeChain[chainIdx]
 				log.Printf("WARN: [server] model fallback %s -> %s (no healthy account)",
 					peek.Model, next)
-				if strings.HasPrefix(next, qoderModelPrefix) {
+				if qRealm2, qModel2, isQoder2 := splitQoderModel(next); isQoder2 {
 					// 降级目标是另一条上游：直接交给 qoderChat，不进选号池。
-					h.qoderChat(w, r, body, strings.TrimPrefix(next, qoderModelPrefix), peek.Stream)
+					h.qoderChat(w, r, body, qModel2, qRealm2, peek.Stream)
 					return
 				}
 				peek.Model = next

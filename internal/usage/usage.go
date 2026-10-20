@@ -68,6 +68,12 @@ type bucket struct {
 	LatN  int64   `json:"ln"` // 延迟样本数
 	TPS   float64 `json:"v"`  // 吐字速率累计
 	TPSN  int64   `json:"vn"` // 速率样本数
+	// Ca 缓存命中 prompt token 合计；CaN 是有该观测的请求数。
+	Ca  int64 `json:"ca"`
+	CaN int64 `json:"can"`
+	// TtMs/TtN 首字节时间累计与样本数。
+	TtMs int64 `json:"tt"`
+	TtN  int64 `json:"ttn"`
 	// Cr 逐请求实测消耗的积分合计（上游 usage.credit 累加，可为小数）。
 	// CrN 是有成本观测的请求数：用来区分「窗口内没有观测」（CrN=0 → 前端显示
 	// 「—」）与「观测到 0 消耗」（免费模型：CrN>0 且 Cr=0）。
@@ -175,6 +181,12 @@ type Delta struct {
 	// 倍率为 1 时它与 Credits 相等，调用方仍应填它：空着会被读成「无观测」。
 	BilledCredits float64
 	HasBilled     bool
+	// CachedTokens 上游回报的命中缓存 prompt token；HasCached=false 表示没观测。
+	CachedTokens int64
+	HasCached    bool
+	// TTFTMs 首字节时间（毫秒），只有流式请求才有。
+	TTFTMs  int64
+	HasTTFT bool
 }
 
 // Add 记录一次请求尝试。
@@ -247,6 +259,14 @@ func (r *Recorder) AddGrouped(now time.Time, realm, uid, model, client, group st
 	}
 	if d.HasBilled {
 		b.CrB += d.BilledCredits
+	}
+	if d.HasCached {
+		b.Ca += d.CachedTokens
+		b.CaN++
+	}
+	if d.HasTTFT {
+		b.TtMs += d.TTFTMs
+		b.TtN++
 	}
 	r.dirty = true
 }
@@ -394,16 +414,23 @@ type Agg struct {
 	// 的收入，差值即毛利。合成一个字段后这笔账就断了。
 	// 无倍率配置时恒等于 Credits（不影响既有口径）。
 	BilledCredits float64 `json:"billed_credits"`
+	// CachedTokens/CachedN 缓存命中合计与样本数。
+	CachedTokens int64 `json:"cached_tokens"`
+	CachedN      int64 `json:"cached_n"`
+	// AvgTTFTMs 平均首字节时间（只有流式样本）。
+	AvgTTFTMs float64 `json:"avg_ttft_ms"`
 }
 
 // aggAcc 是聚合过程中的累加器：Agg 只放已算好的结果，均值需要样本数才能
 // 正确加权（不能对每桶的均值再取平均），所以样本数留在这里。
 type aggAcc struct {
 	Agg
-	latSum     int64
-	latSamples int64
-	tpsSum     float64
-	tpsSamples int64
+	latSum      int64
+	latSamples  int64
+	tpsSum      float64
+	tpsSamples  int64
+	ttftSum     int64
+	ttftSamples int64
 }
 
 func (g *aggAcc) add(b *bucket) {
@@ -419,6 +446,10 @@ func (g *aggAcc) add(b *bucket) {
 	g.Credits += b.Cr
 	g.CreditsN += b.CrN
 	g.BilledCredits += b.CrB
+	g.CachedTokens += b.Ca
+	g.CachedN += b.CaN
+	g.ttftSum += b.TtMs
+	g.ttftSamples += b.TtN
 }
 
 func (g *aggAcc) finish() Agg {
@@ -428,6 +459,9 @@ func (g *aggAcc) finish() Agg {
 	}
 	if g.tpsSamples > 0 {
 		a.AvgTPS = g.tpsSum / float64(g.tpsSamples)
+	}
+	if g.ttftSamples > 0 {
+		a.AvgTTFTMs = float64(g.ttftSum) / float64(g.ttftSamples)
 	}
 	return a
 }

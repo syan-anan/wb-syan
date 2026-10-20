@@ -360,6 +360,64 @@ func main() {
 			}
 			return results, nil
 		},
+		// Qoder 账号运行期管理：写 data/qoder_accounts.json，随后原地替换内存池。
+		// 文件优先于 config.json —— 启动时已经读过一次，这里保持同一口径。
+		QoderAccounts: func() []upstream.QoderAccount {
+			if qoderClient == nil {
+				return nil
+			}
+			return qoderClient.Accounts()
+		},
+		QoderAdd: func(a upstream.QoderAccount) error {
+			return addQoderAccount(a, cfg, qoderClient)
+		},
+		QoderDelete: func(name string) error {
+			return deleteQoderAccount(name, qoderClient)
+		},
+		QoderVerify: func(pat, realm, uid, nickname, userType string) (upstream.QoderIdentity, error) {
+			return upstream.VerifyQoderPAT(pat, realm, uid, nickname, userType)
+		},
+		QoderOAuthStart: func(realm string) (string, string, error) {
+			return upstream.StartQoderOAuth(realm, qoderMachineID())
+		},
+		QoderOAuthPoll: upstream.QoderOAuthPoll,
+		QoderLocalScan: upstream.ImportLocalQoder,
+		QoderSetDisabled: func(name string, disabled bool) error {
+			return setQoderDisabled(name, disabled, qoderClient)
+		},
+		QoderTest: func(name string) error {
+			if qoderClient == nil {
+				return fmt.Errorf("未配置 Qoder 上游")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			return qoderClient.TestAccount(ctx, name)
+		},
+		QoderExport: exportQoderAccounts,
+		QoderCatalogFn: func(realm string) []upstream.QoderCatalogEntry {
+			if qoderClient == nil {
+				return upstream.QoderCatalog(realm)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			return qoderClient.Catalog(ctx, realm)
+		},
+		QoderCampaigns: func() []upstream.QoderCampaignRow {
+			if qoderClient == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return qoderClient.CampaignsAll(ctx)
+		},
+		QoderPro: func() []upstream.QoderProResult {
+			if qoderClient == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			return qoderClient.ProClaimAll(ctx)
+		},
 		QoderHistory: func() (int, int, []map[string]any) {
 			h := upstream.LoadQoderCheckinHistory(qoderHistPath)
 			cur, total := h.Streak(time.Now())
@@ -390,6 +448,12 @@ func main() {
 			Name:      a.Name,
 			PAT:       a.PersonalAccessToken,
 			TokenFile: a.TokenFile,
+			Realm:     a.Realm,
+			UID:       a.UID,
+			Nickname:  a.Nickname,
+			UserType:  a.UserType,
+			OrgID:     a.OrgID,
+			OrgName:   a.OrgName,
 		})
 	}
 	if len(qoderAccounts) == 0 {
@@ -400,6 +464,13 @@ func main() {
 			}
 			qoderAccounts = append(qoderAccounts, upstream.QoderAccount{PAT: pat, TokenFile: tokenFile})
 		}
+	}
+	// 面板在运行期写入的账号优先于 config.json：文件存在就以它为准，
+	// 否则回落到启动配置。两者都为空时仍创建空池，方便面板第一次加号。
+	if stored, err := upstream.LoadQoderAccounts(filepath.Join("data", "qoder_accounts.json")); err == nil && len(stored) > 0 {
+		qoderAccounts = stored
+	} else if err != nil {
+		log.Printf("WARN: qoder 账号文件读取失败: %v", err)
 	}
 	qoderClient = upstream.NewQoderPool(qoderAccounts, filepath.Join("data"))
 	if qoderClient != nil {
